@@ -139,6 +139,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     var mirrorTarget by remember { mutableStateOf<Peer?>(null) }
     val mirroringTo by MirrorService.active.collectAsState()
     val mirrorError by MirrorService.error.collectAsState()
+    val controlEnabled by ControlService.enabled.collectAsState()
     val mirrorConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val peer = mirrorTarget
         val data = result.data
@@ -217,6 +218,17 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                                 Text("Your screen is visible on $name", style = MaterialTheme.typography.bodySmall)
                             }
                             TextButton(onClick = { MirrorService.stop(context) }) { Text("Stop") }
+                        }
+                        Row(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (controlEnabled) "$name can control this phone with its mouse and keyboard"
+                                else "To control this phone from $name, turn on \"BubbleDrop remote control\"",
+                                style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+                            )
+                            if (!controlEnabled) {
+                                TextButton(onClick = { ControlService.openSettings(context) }) { Text("Turn on") }
+                            }
                         }
                     }
                 }

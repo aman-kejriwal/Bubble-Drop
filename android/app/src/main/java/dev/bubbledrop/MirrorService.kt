@@ -24,7 +24,11 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.IntentCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.io.BufferedOutputStream
+import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -42,6 +46,8 @@ class MirrorService : Service() {
     @Volatile private var stopping = false
     private var projection: MediaProjection? = null
     private var socket: SSLSocket? = null
+    private var output: OutputStream? = null
+    private val writeLock = Any()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -98,7 +104,8 @@ class MirrorService : Service() {
         socket.soTimeout = 15_000
         socket.startHandshake()
         val output = BufferedOutputStream(socket.outputStream, 64 * 1024)
-        val body = MirrorRequest(Graph.device).toJson().toString().toByteArray(Charsets.UTF_8)
+        this.output = output
+        val body = MirrorRequest(Graph.device, ControlService.enabled.value).toJson().toString().toByteArray(Charsets.UTF_8)
         output.write(("POST /api/v2/mirror HTTP/1.1\r\nHost: ${peer.address.hostAddress}\r\n" +
             "Content-Type: application/json\r\nContent-Length: ${body.size}\r\n\r\n").toByteArray(Charsets.US_ASCII))
         output.write(body)
@@ -113,13 +120,47 @@ class MirrorService : Service() {
             else -> throw IOException("${peer.name} refused mirroring ($status)")
         }
 
-        // The Mac closes the connection when its window is closed; notice that right away.
+        // Input from the Mac arrives on the same connection; it closes it when its window is closed.
         socket.soTimeout = 0
-        thread(name = "mirror-eof") {
-            runCatching { while (input.read() >= 0) Unit }
+        thread(name = "mirror-input") {
+            runCatching { readControl(DataInputStream(input)) }
             if (!stopping) Handler(Looper.getMainLooper()).post { shutDown() }
         }
-        Encoder(projection, output).run()
+        // Tell the Mac when remote control is switched on or off mid-session.
+        val controlUpdates = Graph.scope.launch {
+            ControlService.enabled.drop(1).collect { on ->
+                runCatching { writePacket(TYPE_CONTROL_STATE, 0, byteArrayOf(if (on) 1 else 0)) }
+            }
+        }
+        try {
+            Encoder(projection).run()
+        } finally {
+            controlUpdates.cancel()
+        }
+    }
+
+    /** Reads packets from the Mac until it closes the connection, forwarding input events. */
+    private fun readControl(input: DataInputStream) {
+        val header = ByteArray(13)
+        while (true) {
+            input.readFully(header)
+            val type = header[0].toInt()
+            val length = ByteBuffer.wrap(header, 9, 4).int
+            if (length !in 0..(64 * 1024)) throw IOException("bad control packet")
+            val payload = ByteArray(length)
+            input.readFully(payload)
+            if (type == TYPE_INPUT) {
+                val event = runCatching { JSONObject(String(payload, Charsets.UTF_8)) }.getOrNull() ?: continue
+                ControlService.instance?.handle(event)
+            }
+        }
+    }
+
+    private fun writePacket(type: Int, ptsUs: Long, payload: ByteArray) = synchronized(writeLock) {
+        val output = output ?: throw IOException("not connected")
+        output.write(ByteBuffer.allocate(13).put(type.toByte()).putLong(ptsUs).putInt(payload.size).array())
+        output.write(payload)
+        output.flush()
     }
 
     /** Reads the status line and headers, then skips the small JSON body. */
@@ -143,7 +184,7 @@ class MirrorService : Service() {
      * Feeds the screen through a hardware encoder and writes packets until stopped. When the phone
      * rotates, the encoder is rebuilt at the new size (new SPS/PPS go out as a config packet).
      */
-    private inner class Encoder(private val projection: MediaProjection, private val output: OutputStream) {
+    private inner class Encoder(private val projection: MediaProjection) {
         @Volatile private var restart = false
         private val displays = getSystemService(DisplayManager::class.java)
         private val listener = object : DisplayManager.DisplayListener {
@@ -208,13 +249,6 @@ class MirrorService : Service() {
                 if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
             }
         }
-
-        private fun writePacket(type: Int, ptsUs: Long, payload: ByteArray) {
-            val header = ByteBuffer.allocate(13).put(type.toByte()).putLong(ptsUs).putInt(payload.size).array()
-            output.write(header)
-            output.write(payload)
-            output.flush()
-        }
     }
 
     private data class CaptureSize(val width: Int, val height: Int, val dpi: Int)
@@ -277,6 +311,8 @@ class MirrorService : Service() {
         private const val TYPE_CONFIG = 1
         private const val TYPE_FRAME = 2
         private const val TYPE_END = 3
+        private const val TYPE_CONTROL_STATE = 4
+        private const val TYPE_INPUT = 10
 
         /** Peers aren't parcelable; the one picked in the UI waits here for the service to start. */
         @Volatile private var pendingPeer: Peer? = null

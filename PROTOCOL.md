@@ -150,9 +150,25 @@ Each packet is a 13-byte big-endian header followed by the payload:
 
 | bytes | field                                                        |
 |-------|--------------------------------------------------------------|
-| 1     | type: `1` codec config, `2` video frame, `3` end of stream   |
+| 1     | type (see below)                                             |
 | 8     | presentation time in microseconds                            |
 | 4     | payload length (≤ 16 MiB)                                    |
+
+Phone → viewer types: `1` codec config, `2` video frame, `3` end of stream, `4` remote control
+switched on/off (payload one byte, `1`/`0`).
+
+The request body may include `"control": true` when the phone accepts input (its remote-control
+service is on). The viewer then sends type `10` packets the other way, on the same connection: a
+UTF-8 JSON input event (≤ 64 KiB). Coordinates are fractions (0–1) of the phone screen, y down.
+
+| event                                                 | meaning                                  |
+|-------------------------------------------------------|------------------------------------------|
+| `{"t":"tap","x":…,"y":…,"ms":50}`                     | tap; a longer `ms` is a long press       |
+| `{"t":"swipe","p":[[x,y],…],"ms":…}`                  | drag along the points over `ms`          |
+| `{"t":"key","k":"back"\|"home"\|"recents"\|"enter"\|"backspace"}` | system or editing key |
+| `{"t":"text","s":"…"}`                                | type into the focused field              |
+
+The phone ignores input unless a mirror session the user started is running.
 
 Video is H.264 in Annex-B form (start-code separated NAL units), without B-frames. A codec config
 packet carries the SPS/PPS and is sent again whenever the picture size changes (e.g. rotation).

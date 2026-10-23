@@ -3,9 +3,12 @@ import Foundation
 /// Body of `POST /api/v2/mirror`.
 public struct MirrorRequest: Codable, Sendable {
     public var sender: DeviceInfo
+    /// Whether the phone accepts input from the viewer (its remote-control service is on).
+    public var control: Bool?
 
-    public init(sender: DeviceInfo) {
+    public init(sender: DeviceInfo, control: Bool? = nil) {
         self.sender = sender
+        self.control = control
     }
 }
 
@@ -17,12 +20,17 @@ public final class MirrorStream: @unchecked Sendable {
         case config(Data)
         /// One H.264 access unit in Annex-B form.
         case frame(Data, presentationTimeUs: Int64)
+        /// The phone switched remote control on or off.
+        case controlAvailable(Bool)
     }
 
     private let wire: Wire
+    /// Whether the phone accepted input when the session started.
+    public let controlAvailable: Bool
 
-    init(_ wire: Wire) {
+    init(_ wire: Wire, controlAvailable: Bool) {
         self.wire = wire
+        self.controlAvailable = controlAvailable
     }
 
     /// The next packet, or nil once the phone ends the stream.
@@ -39,9 +47,21 @@ public final class MirrorStream: @unchecked Sendable {
             case 1: return .config(payload)
             case 2: return .frame(payload, presentationTimeUs: pts)
             case 3: return nil
+            case 4: return .controlAvailable(payload.first == 1)
             default: continue
             }
         }
+    }
+
+    /// Sends one input event (a JSON object, see PROTOCOL.md "Mirroring") to the phone.
+    public func send(input event: [String: Any]) {
+        guard let json = try? JSONSerialization.data(withJSONObject: event) else { return }
+        var header = Data([10])
+        header.append(contentsOf: [UInt8](repeating: 0, count: 8))
+        let length = UInt32(json.count)
+        header.append(contentsOf: [UInt8(length >> 24 & 0xff), UInt8(length >> 16 & 0xff),
+                                   UInt8(length >> 8 & 0xff), UInt8(length & 0xff)])
+        wire.sendNoWait(header + json)
     }
 
     /// Ends the stream from this side (e.g. the viewer window was closed).

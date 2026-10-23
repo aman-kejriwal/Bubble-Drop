@@ -83,8 +83,8 @@ data class LinkRequest(val sender: DeviceInfo, val url: String) {
 }
 
 /** Body of `POST /api/v2/mirror`; screen packets follow on the same connection. */
-data class MirrorRequest(val sender: DeviceInfo) {
-    fun toJson(): JSONObject = JSONObject().put("sender", sender.toJson())
+data class MirrorRequest(val sender: DeviceInfo, val control: Boolean) {
+    fun toJson(): JSONObject = JSONObject().put("sender", sender.toJson()).put("control", control)
 }
 
 /** Only http(s) links are sent or opened; other schemes could launch arbitrary apps or files. */

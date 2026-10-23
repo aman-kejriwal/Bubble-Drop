@@ -176,7 +176,7 @@ public final class BubbleDropServer {
         var sender = request.sender
         if let known = trust.device(for: client) { sender.name = known.name }
         try await wire.sendResponse(status: 200, json: EmptyBody(), final: false)
-        await mirrorHandler(sender, MirrorStream(wire))
+        await mirrorHandler(sender, MirrorStream(wire, controlAvailable: request.control ?? false))
     }
 
     private func sendPairingRequired(_ wire: Wire) async throws {

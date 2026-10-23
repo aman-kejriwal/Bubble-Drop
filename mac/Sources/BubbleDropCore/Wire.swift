@@ -146,6 +146,11 @@ final class Wire {
         }
     }
 
+    /// Queues [data] without waiting; NWConnection keeps sends in order.
+    func sendNoWait(_ data: Data) {
+        conn.send(content: data, completion: .contentProcessed { _ in })
+    }
+
     /// With `final: false` the connection stays open afterwards (used to start a mirror stream).
     func sendResponse<T: Encodable>(status: Int, json: T, final: Bool = true) async throws {
         let body = try JSONEncoder().encode(json)

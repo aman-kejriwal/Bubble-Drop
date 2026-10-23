@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+xcuserdata/
+.swiftpm/
+
+# Build output
+build/
+.build/
+.gradle/
+.kotlin/
+android/app/release/
+
+# Machine-specific config (SDK paths)
+local.properties
+
+# Keys, certificates and signing material. BubbleDrop's device identity (identity.p12)
+# and pairings (trusted.json) live outside the repo; never commit copies of them.
+*.p12
+*.pfx
+*.pem
+*.key
+*.jks
+*.keystore
+keystore.properties
+trusted.json
+device-id
+.env
+.env.*
+
+# Crash reports and logs
+*.ips
+*.log
