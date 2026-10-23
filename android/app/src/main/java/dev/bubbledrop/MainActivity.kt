@@ -140,6 +140,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     val mirroringTo by MirrorService.active.collectAsState()
     val mirrorError by MirrorService.error.collectAsState()
     val controlEnabled by ControlService.enabled.collectAsState()
+    val relayEnabled by NotificationRelay.enabled.collectAsState()
     val mirrorConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val peer = mirrorTarget
         val data = result.data
@@ -261,6 +262,24 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                                 }
                             }
                             TextButton(onClick = onClearShared) { Text("Cancel") }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Notifications on your Mac", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (relayEnabled) "Sent to your paired Macs. Choose which ones show in the Mac's BubbleDrop menu."
+                                else "Show this phone's notifications on your paired Mac, and reply from there.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        TextButton(onClick = { NotificationRelay.openSettings(context) }) {
+                            Text(if (relayEnabled) "Settings" else "Turn on")
                         }
                     }
                 }

@@ -29,6 +29,8 @@ public final class BubbleDropServer {
     public var linkHandler: (DeviceInfo, URL) async -> Bool = { _, _ in false }
     /// Shows a paired device's screen; returns when the viewer is closed or the stream ends.
     public var mirrorHandler: (DeviceInfo, MirrorStream) async -> Void = { _, _ in }
+    /// A paired phone posted or removed a notification.
+    public var notificationHandler: (PhoneSource, NotifyEvent) async -> Void = { _, _ in }
     private var mirroring = false
     /// Show the pairing code and ask the user to confirm it matches. Times out after 120 s.
     public var pairHandler: (PairingRequest) async -> Bool = { _ in false }
@@ -132,6 +134,13 @@ public final class BubbleDropServer {
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))
                 try await handleLink(try JSONDecoder().decode(LinkRequest.self, from: body), client, wire)
+            case "/api/v2/notify":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                let body = try await wire.readBody(length: Int(head.contentLength))
+                let event = try JSONDecoder().decode(NotifyEvent.self, from: body)
+                let source = PhoneSource(fingerprint: client, name: trust.device(for: client)?.name ?? "Phone")
+                await notificationHandler(source, event)
+                try await wire.sendResponse(status: 200, json: EmptyBody())
             case "/api/v2/mirror":
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))

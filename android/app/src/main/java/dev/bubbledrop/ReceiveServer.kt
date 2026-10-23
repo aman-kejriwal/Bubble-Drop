@@ -106,6 +106,17 @@ class ReceiveServer(
                 "/api/v2/upload" -> if (!paired) PAIRING_REQUIRED else handleUpload(peer, request)
                 "/api/v2/link" ->
                     if (!paired) PAIRING_REQUIRED else handleLink(peer, LinkRequest.fromJson(request.readJson()))
+                "/api/v2/notification/action" -> if (!paired) PAIRING_REQUIRED else {
+                    val body = request.readJson()
+                    val relay = NotificationRelay.instance
+                    val done = relay?.perform(body.getString("key"), body.getInt("index"),
+                        body.optString("reply").takeIf { body.has("reply") }) == true
+                    if (done) 200 to JSONObject() else 404 to errorJson("notification is gone")
+                }
+                "/api/v2/notification/dismiss" -> if (!paired) PAIRING_REQUIRED else {
+                    NotificationRelay.instance?.dismiss(request.readJson().getString("key"))
+                    200 to JSONObject()
+                }
                 "/api/v2/cancel" -> {
                     request.query["sessionId"]?.let { id -> sessions.computeIfPresent(id) { _, v -> v.takeIf { it.client != peer } } }
                     200 to JSONObject()

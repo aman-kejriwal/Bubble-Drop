@@ -103,6 +103,16 @@ public final class BubbleDropClient {
         return (try? JSONDecoder().decode(LinkResponse.self, from: data))?.opened ?? false
     }
 
+    /// Posts [body] to a paired device, accepting only its pinned certificate. Returns the HTTP status.
+    @discardableResult
+    public func post<Body: Encodable>(_ body: Body, path: String, to endpoint: NWEndpoint,
+                                      pinned: String) async throws -> Int {
+        let (status, _, _) = try await roundTrip(endpoint, pinned: pinned, path: path,
+                                                 body: try JSONEncoder().encode(body), timeout: 15,
+                                                 allowErrorStatus: true)
+        return status
+    }
+
     public func connectPaired(_ endpoint: NWEndpoint,
                               confirmPairing: @escaping (PairingPrompt) async -> Bool,
                               willPair: () -> Void = {}) async throws -> (DeviceInfo, String) {

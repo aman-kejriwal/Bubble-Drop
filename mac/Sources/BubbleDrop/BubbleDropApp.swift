@@ -20,7 +20,10 @@ struct BubbleDropApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        Task { @MainActor in AppModel.shared.start() }
+        Task { @MainActor in
+            PhoneNotifications.shared.start()
+            AppModel.shared.start()
+        }
     }
 
     /// Files from the Share menu (`bubbledrop://share?path=…`) or opened with BubbleDrop.
@@ -82,6 +85,11 @@ struct ContentView: View {
 
             if !model.trustedDevices.isEmpty {
                 Divider()
+                FromPhoneSection()
+            }
+
+            if !model.trustedDevices.isEmpty {
+                Divider()
                 DisclosureGroup("Paired devices (\(model.trustedDevices.count))") {
                     ForEach(model.trustedDevices) { device in
                         HStack {
@@ -107,6 +115,38 @@ struct ContentView: View {
         }
         .padding(14)
         .frame(width: 320)
+    }
+}
+
+/// Switches for what a paired phone may show on this Mac.
+struct FromPhoneSection: View {
+    @ObservedObject private var phone = PhoneNotifications.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("From your phone").font(.subheadline.weight(.semibold))
+            Toggle("Notifications", isOn: $phone.showNotifications)
+            Toggle("Calls", isOn: $phone.showCalls)
+            if !phone.knownApps.isEmpty {
+                DisclosureGroup("Apps (\(phone.knownApps.count))") {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(phone.knownApps.sorted { $0.value.localizedCaseInsensitiveCompare($1.value) == .orderedAscending },
+                                    id: \.key) { package, name in
+                                Toggle(name, isOn: Binding(get: { phone.isShown(package) },
+                                                           set: { phone.setShown($0, for: package) }))
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 140)
+                }
+                .disabled(!phone.showNotifications && !phone.showCalls)
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .font(.caption)
     }
 }
 

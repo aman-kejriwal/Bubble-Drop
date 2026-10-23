@@ -86,6 +86,9 @@ final class AppModel: ObservableObject {
             server.mirrorHandler = { sender, stream in
                 await MirrorViewer.run(sender: sender, stream: stream)
             }
+            server.notificationHandler = { source, event in
+                await PhoneNotifications.shared.handle(event, from: source)
+            }
             server.pairHandler = { request in
                 await MainActor.run {
                     AppModel.shared.confirmPairing(
@@ -177,6 +180,14 @@ final class AppModel: ObservableObject {
     func closeSpotlight() {
         spotlightId = nil
         if offer == nil, shareFiles.isEmpty, shareLink == nil { DropPanel.shared.dismiss() }
+    }
+
+    // MARK: Phone notifications
+
+    /// Sends [body] to the paired phone with [fingerprint], if it's nearby.
+    func sendToPhone<Body: Encodable & Sendable>(_ body: Body, path: String, fingerprint: String) async {
+        guard let client, let peer = peers.first(where: { $0.fingerprint == fingerprint }) else { return }
+        _ = try? await client.post(body, path: path, to: peer.endpoint, pinned: fingerprint)
     }
 
     // MARK: Links

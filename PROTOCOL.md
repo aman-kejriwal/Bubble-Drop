@@ -176,6 +176,35 @@ Senders keep frames coming while the screen is idle; receivers drop the stream a
 silence. One mirror session at a time: `409` if the receiver is already showing a screen, `503`
 if receiving is off.
 
+## Notifications
+
+A phone with Notification access forwards its notifications to the paired Macs it can see. All
+three endpoints are for paired clients only.
+
+### `POST /api/v2/notify` (phone → Mac)
+`{ "event": "posted", "notification": PhoneNotification }` or `{ "event": "removed", "key": "…" }`.
+Response `200 {}`. Re-posting the same `key` replaces the earlier notification.
+
+```jsonc
+// PhoneNotification
+{ "key": "0|com.whatsapp|1|…", "package": "com.whatsapp", "app": "WhatsApp",
+  "title": "Mom", "text": "Call me back", "subText": "", "time": 1792780000000,
+  "category": "msg",                       // Android category; "call" for call notifications
+  "actions": [ { "index": 0, "title": "Reply", "reply": true },
+               { "index": 1, "title": "Mark as read", "reply": false } ],
+  "icon": "iVBORw0…" }                     // app icon, base64 PNG (optional)
+```
+
+The phone skips its own notifications, group summaries, ongoing ones other than calls, and
+minimum-importance ones. The Mac decides what to show (all notifications, calls, per app).
+
+### `POST /api/v2/notification/action` (Mac → phone)
+`{ "key": "…", "index": 0, "reply": "On my way" }` runs that action; `reply` fills the action's
+text input. `200 {}`, or `404` if the notification or action is gone.
+
+### `POST /api/v2/notification/dismiss` (Mac → phone)
+`{ "key": "…" }` clears the notification on the phone. `200 {}`.
+
 ## Receiver rules
 
 - Use only the last path component of `name`; strip leading dots, `/`, `\`

@@ -1,6 +1,7 @@
 <resources>
     <string name="app_name">BubbleDrop</string>
     <string name="share_label">BubbleDrop</string>
+    <string name="relay_label">BubbleDrop: notifications on Mac</string>
     <string name="control_label">BubbleDrop remote control</string>
     <string name="control_description">Lets a paired Mac control this phone with its mouse and keyboard while you mirror your screen to it. It only works during a mirroring session you start, and stops when mirroring stops.</string>
 </resources>

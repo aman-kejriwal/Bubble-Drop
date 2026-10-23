@@ -110,6 +110,15 @@ class Sender(
      * Discovers [peer] and pairs with it unless both sides already trust each other.
      * Returns the certificate fingerprint every later request is pinned to.
      */
+    /**
+     * Posts [body] to [peer] only if it's already paired, pinned to the paired certificate; never
+     * starts pairing. Returns the status, or null if [peer] isn't paired. Blocking.
+     */
+    fun postToPaired(peer: Peer, path: String, body: JSONObject): Int? {
+        val fingerprint = peer.fingerprint?.takeIf(trust::isTrusted) ?: return null
+        return postJson(peer, fingerprint, path, body, readTimeoutMs = 10_000).status
+    }
+
     /** The paired certificate fingerprint of [peer], pairing first if needed. Blocking. */
     fun connectPaired(peer: Peer): String {
         val discover = postJson(peer, null, "/api/v2/discover", device.toJson(), readTimeoutMs = 15_000)

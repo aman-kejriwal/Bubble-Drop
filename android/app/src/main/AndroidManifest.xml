@@ -63,6 +63,16 @@
                 android:resource="@xml/control_service" />
         </service>
 
+        <service
+            android:name=".NotificationRelay"
+            android:exported="true"
+            android:label="@string/relay_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".PromptActionReceiver"
             android:exported="false" />
