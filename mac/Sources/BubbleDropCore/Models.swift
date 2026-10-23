@@ -53,6 +53,31 @@ public struct FileOffer: Codable, Hashable, Sendable {
     }
 }
 
+/// A web page to open on the receiver: `POST /api/v2/link`.
+public struct LinkRequest: Codable, Sendable {
+    public var sender: DeviceInfo
+    public var url: String
+
+    public init(sender: DeviceInfo, url: String) {
+        self.sender = sender
+        self.url = url
+    }
+}
+
+public struct LinkResponse: Codable, Sendable {
+    /// Whether the receiver opened the link right away (otherwise it showed a notification).
+    public var opened: Bool
+
+    public init(opened: Bool) {
+        self.opened = opened
+    }
+}
+
+/// Only http(s) links are sent or opened; other schemes could launch arbitrary apps or files.
+public func isWebLink(_ url: URL) -> Bool {
+    ["http", "https"].contains(url.scheme?.lowercased() ?? "") && !(url.host ?? "").isEmpty
+}
+
 public struct AskRequest: Codable, Sendable {
     public var sender: DeviceInfo
     public var files: [FileOffer]

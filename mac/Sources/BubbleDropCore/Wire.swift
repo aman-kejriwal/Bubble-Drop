@@ -146,13 +146,14 @@ final class Wire {
         }
     }
 
-    func sendResponse<T: Encodable>(status: Int, json: T) async throws {
+    /// With `final: false` the connection stays open afterwards (used to start a mirror stream).
+    func sendResponse<T: Encodable>(status: Int, json: T, final: Bool = true) async throws {
         let body = try JSONEncoder().encode(json)
         var head = "HTTP/1.1 \(status) \(reasonPhrase(status))\r\n"
         head += "Content-Type: application/json\r\n"
         head += "Content-Length: \(body.count)\r\n"
-        head += "Connection: close\r\n\r\n"
-        try await send(Data(head.utf8) + body, final: true)
+        head += final ? "Connection: close\r\n\r\n" : "\r\n"
+        try await send(Data(head.utf8) + body, final: final)
     }
 }
 

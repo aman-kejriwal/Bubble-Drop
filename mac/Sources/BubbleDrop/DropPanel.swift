@@ -97,6 +97,8 @@ struct DropCard: View {
             Group {
                 if let offer = model.offer {
                     OfferContent(offer: offer)
+                } else if !model.shareFiles.isEmpty || model.shareLink != nil {
+                    SharePicker(files: model.shareFiles, link: model.shareLink)
                 } else if let transfer = model.spotlight {
                     TransferContent(transfer: transfer)
                 }
@@ -108,6 +110,117 @@ struct DropCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(.white.opacity(0.12)))
         .animation(.easeInOut(duration: 0.25), value: model.offer?.id)
+        .animation(.easeInOut(duration: 0.25), value: model.shareFiles)
+        .animation(.easeInOut(duration: 0.25), value: model.shareLink)
+    }
+}
+
+/// Shown after "Share → BubbleDrop": the shared files on top, nearby devices as bubbles below.
+private struct SharePicker: View {
+    @EnvironmentObject private var model: AppModel
+    let files: [URL]
+    let link: URL?
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                if let link {
+                    Image(systemName: "link")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Circle().fill(Color.accentColor.gradient))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(link.host ?? link.absoluteString).font(.headline).lineLimit(1)
+                        Text(link.absoluteString)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                } else {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: files[0].path))
+                        .resizable()
+                        .frame(width: 44, height: 44)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(files.count == 1 ? files[0].lastPathComponent : "\(files.count) items")
+                            .font(.headline)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(formatBytes(totalBytes)).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            Divider()
+            Text(link != nil ? "Open on a device" : "Send with BubbleDrop")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if model.peers.isEmpty {
+                Spacer(minLength: 0)
+                ZStack {
+                    ForEach(0..<3, id: \.self) { RippleRing(delay: Double($0) * 0.8, diameter: 60) }
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                }
+                .frame(height: 100)
+                Text("Looking for nearby devices…").font(.callout).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 8)], spacing: 14) {
+                        ForEach(model.peers) { PeerBubble(peer: $0) }
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+            Button { model.cancelShare() } label: { Text("Cancel").frame(maxWidth: .infinity) }
+                .keyboardShortcut(.cancelAction)
+                .controlSize(.large)
+        }
+    }
+
+    private var totalBytes: Int64 {
+        files.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+}
+
+private struct PeerBubble: View {
+    @EnvironmentObject private var model: AppModel
+    let peer: Peer
+    @State private var hovering = false
+
+    var body: some View {
+        Button { model.sendShared(to: peer) } label: {
+            VStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(colors: [Color(red: 0.2, green: 0.8, blue: 0.98), .accentColor, .purple],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Circle()
+                        .fill(.white.opacity(0.35))
+                        .frame(width: 16, height: 10)
+                        .offset(x: -14, y: -18)
+                    Image(systemName: peer.platform == "android" ? "iphone.gen3" : "laptopcomputer")
+                        .font(.system(size: 26, weight: .medium))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 64, height: 64)
+                .shadow(color: .accentColor.opacity(hovering ? 0.5 : 0.2), radius: hovering ? 10 : 4)
+                .scaleEffect(hovering ? 1.08 : 1)
+                Text(peer.name)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: hovering)
+        .help("Send to \(peer.name)")
     }
 }
 
@@ -211,8 +324,10 @@ private struct TransferContent: View {
 
     private var title: String {
         switch transfer.status {
-        case .waiting: incoming ? "Connecting…" : "Waiting for \(transfer.peerName)"
+        case .waiting: incoming ? "Connecting…"
+            : transfer.link != nil ? "Sending to \(transfer.peerName)" : "Waiting for \(transfer.peerName)"
         case .active: incoming ? "Receiving from \(transfer.peerName)" : "Sending to \(transfer.peerName)"
+        case .done where transfer.link != nil: incoming || transfer.linkOpened ? "Opened" : "Sent"
         case .done: incoming ? "Received" : "Sent"
         case .failed: incoming ? "Couldn't receive" : "Couldn't send"
         }
@@ -221,7 +336,7 @@ private struct TransferContent: View {
     private var detail: String {
         switch transfer.status {
         case .waiting:
-            return incoming ? "" : "They'll be asked to accept"
+            return incoming || transfer.link != nil ? "" : "They'll be asked to accept"
         case .active:
             var text = "\(formatBytes(transfer.doneBytes)) of \(formatBytes(transfer.totalBytes))"
             if let started = transfer.startedAt {
@@ -239,6 +354,10 @@ private struct TransferContent: View {
                 }
             }
             return text
+        case .done where transfer.link != nil:
+            if incoming { return "Link from \(transfer.peerName)" }
+            return transfer.linkOpened ? "In \(transfer.peerName)'s browser"
+                : "\(transfer.peerName) got a notification to open it"
         case .done:
             return incoming ? "From \(transfer.peerName) · \(formatBytes(transfer.totalBytes))"
                 : "Delivered to \(transfer.peerName)"

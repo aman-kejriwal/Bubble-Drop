@@ -81,6 +81,28 @@ public final class BubbleDropClient {
 
     /// Discovers the peer and pairs with it unless both sides already trust each other.
     /// Returns the receiver and the certificate fingerprint every later request is pinned to.
+    /// Opens [link] on the receiver; returns whether it opened right away (rather than as a notification).
+    public func send(link: URL, to endpoint: NWEndpoint,
+                     confirmPairing: @escaping (PairingPrompt) async -> Bool,
+                     progress: @escaping (SendStage) -> Void = { _ in }) async throws -> Bool {
+        progress(.connecting)
+        let (_, serverFingerprint) = try await connectPaired(endpoint, confirmPairing: confirmPairing) {
+            progress(.pairing)
+        }
+        let request = LinkRequest(sender: device, url: link.absoluteString)
+        let (status, data, _) = try await roundTrip(endpoint, pinned: serverFingerprint, path: "/api/v2/link",
+                                                    body: try JSONEncoder().encode(request), timeout: 30,
+                                                    allowErrorStatus: true)
+        switch status {
+        case 200: break
+        case 401: throw BubbleDropError.pairingRequired
+        case 503: throw BubbleDropError.receivingOff
+        default: throw BubbleDropError.http(status, Self.errorMessage(data))
+        }
+        progress(.done)
+        return (try? JSONDecoder().decode(LinkResponse.self, from: data))?.opened ?? false
+    }
+
     public func connectPaired(_ endpoint: NWEndpoint,
                               confirmPairing: @escaping (PairingPrompt) async -> Bool,
                               willPair: () -> Void = {}) async throws -> (DeviceInfo, String) {

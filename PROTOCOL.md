@@ -128,6 +128,38 @@ Each offered file may be uploaded once, sequentially, in any order.
 ### `POST /api/v2/cancel?sessionId=…`
 Drops the session if it belongs to the caller. Response `200 {}`.
 
+### `POST /api/v2/link` (paired clients only)
+Body: `{ "sender": DeviceInfo, "url": "https://…" }`. Opens a web page on the receiver, with no
+accept prompt (the sender is already paired). Only `http` and `https` URLs are accepted.
+
+Response `200 { "opened": true|false }`: `true` if the default browser was opened, `false` if the
+receiver could only show a notification to open it (Android apps can't open a browser while in the
+background).
+
+| status | meaning                         |
+|--------|---------------------------------|
+| 400    | not an http(s) URL              |
+| 503    | receiving is turned off         |
+
+### `POST /api/v2/mirror` (paired clients only)
+Body: `{ "sender": DeviceInfo }`. Starts showing the sender's screen on the receiver. The receiver
+answers `200 {}` **without** `Connection: close` and keeps the connection open; the sender then
+streams packets on it until either side closes the connection.
+
+Each packet is a 13-byte big-endian header followed by the payload:
+
+| bytes | field                                                        |
+|-------|--------------------------------------------------------------|
+| 1     | type: `1` codec config, `2` video frame, `3` end of stream   |
+| 8     | presentation time in microseconds                            |
+| 4     | payload length (≤ 16 MiB)                                    |
+
+Video is H.264 in Annex-B form (start-code separated NAL units), without B-frames. A codec config
+packet carries the SPS/PPS and is sent again whenever the picture size changes (e.g. rotation).
+Senders keep frames coming while the screen is idle; receivers drop the stream after 15 s of
+silence. One mirror session at a time: `409` if the receiver is already showing a screen, `503`
+if receiving is off.
+
 ## Receiver rules
 
 - Use only the last path component of `name`; strip leading dots, `/`, `\`

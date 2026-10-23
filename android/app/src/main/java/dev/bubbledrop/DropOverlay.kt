@@ -193,9 +193,18 @@ private fun TransferCard(transfer: Transfer, onClose: () -> Unit) {
         DropOrb(transfer.peerPlatform, phase)
         Spacer(Modifier.height(24.dp))
         val title = when (transfer.status) {
-            Transfer.Status.Waiting -> if (transfer.incoming) "Connecting…" else "Waiting for ${transfer.peerName}"
+            Transfer.Status.Waiting -> when {
+                transfer.incoming -> "Connecting…"
+                transfer.link != null -> "Sending to ${transfer.peerName}"
+                else -> "Waiting for ${transfer.peerName}"
+            }
             Transfer.Status.Active -> if (transfer.incoming) "Receiving from ${transfer.peerName}" else "Sending to ${transfer.peerName}"
-            Transfer.Status.Done -> if (transfer.incoming) "Received" else "Sent"
+            Transfer.Status.Done -> when {
+                transfer.link != null && transfer.incoming -> "Link received"
+                transfer.link != null && transfer.linkOpened -> "Opened"
+                transfer.incoming -> "Received"
+                else -> "Sent"
+            }
             is Transfer.Status.Failed -> if (transfer.incoming) "Couldn't receive" else "Couldn't send"
         }
         Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold,
@@ -205,7 +214,7 @@ private fun TransferCard(transfer: Transfer, onClose: () -> Unit) {
             maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(8.dp))
         val detail = when (val status = transfer.status) {
-            Transfer.Status.Waiting -> if (transfer.incoming) "" else "They'll be asked to accept"
+            Transfer.Status.Waiting -> if (transfer.incoming || transfer.link != null) "" else "They'll be asked to accept"
             Transfer.Status.Active -> buildString {
                 append("${formatBytes(transfer.doneBytes)} of ${formatBytes(transfer.totalBytes)}")
                 if (speed > 0) {
@@ -214,8 +223,12 @@ private fun TransferCard(transfer: Transfer, onClose: () -> Unit) {
                     if (remaining >= 1) append(" · ${formatEta(remaining)} left")
                 }
             }
-            Transfer.Status.Done -> if (transfer.incoming) "From ${transfer.peerName} · ${formatBytes(transfer.totalBytes)}"
-                else "Delivered to ${transfer.peerName}"
+            Transfer.Status.Done -> when {
+                transfer.link != null && transfer.linkOpened -> "In ${transfer.peerName}'s browser"
+                transfer.link != null && !transfer.incoming -> "${transfer.peerName} got a notification to open it"
+                transfer.incoming -> "From ${transfer.peerName} · ${formatBytes(transfer.totalBytes)}"
+                else -> "Delivered to ${transfer.peerName}"
+            }
             is Transfer.Status.Failed -> status.message
         }
         Text(detail, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center,

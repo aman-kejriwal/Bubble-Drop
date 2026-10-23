@@ -25,6 +25,11 @@ public final class BubbleDropServer {
     public var receivingEnabled = true
     /// Decide whether to accept an offer from a paired device. Times out after 120 s.
     public var askHandler: (AskRequest) async -> Bool = { _ in false }
+    /// Opens a link from a paired device; returns whether it was opened.
+    public var linkHandler: (DeviceInfo, URL) async -> Bool = { _, _ in false }
+    /// Shows a paired device's screen; returns when the viewer is closed or the stream ends.
+    public var mirrorHandler: (DeviceInfo, MirrorStream) async -> Void = { _, _ in }
+    private var mirroring = false
     /// Show the pairing code and ask the user to confirm it matches. Times out after 120 s.
     public var pairHandler: (PairingRequest) async -> Bool = { _ in false }
     /// The other device abandoned pairing; dismiss any code prompt.
@@ -123,6 +128,14 @@ public final class BubbleDropServer {
             case "/api/v2/upload":
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 try await handleUpload(head, client, wire)
+            case "/api/v2/link":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                let body = try await wire.readBody(length: Int(head.contentLength))
+                try await handleLink(try JSONDecoder().decode(LinkRequest.self, from: body), client, wire)
+            case "/api/v2/mirror":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                let body = try await wire.readBody(length: Int(head.contentLength))
+                try await handleMirror(try JSONDecoder().decode(MirrorRequest.self, from: body), client, wire)
             case "/api/v2/cancel":
                 if let id = head.query["sessionId"] { await sessions.remove(id, client: client) }
                 try await wire.sendResponse(status: 200, json: EmptyBody())
@@ -132,6 +145,38 @@ public final class BubbleDropServer {
         } catch {
             try? await wire.sendResponse(status: 400, json: ErrorBody(error: error.localizedDescription))
         }
+    }
+
+    private func handleLink(_ request: LinkRequest, _ client: String, _ wire: Wire) async throws {
+        guard receivingEnabled else {
+            return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
+        }
+        guard let url = URL(string: request.url), isWebLink(url) else {
+            return try await wire.sendResponse(status: 400, json: ErrorBody(error: "only http and https links can be opened"))
+        }
+        var sender = request.sender
+        if let known = trust.device(for: client) { sender.name = known.name }
+        let opened = await linkHandler(sender, url)
+        try await wire.sendResponse(status: 200, json: LinkResponse(opened: opened))
+    }
+
+    private func handleMirror(_ request: MirrorRequest, _ client: String, _ wire: Wire) async throws {
+        guard receivingEnabled else {
+            return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
+        }
+        let began: Bool = locked {
+            if mirroring { return false }
+            mirroring = true
+            return true
+        }
+        guard began else {
+            return try await wire.sendResponse(status: 409, json: ErrorBody(error: "already showing a screen"))
+        }
+        defer { locked { mirroring = false } }
+        var sender = request.sender
+        if let known = trust.device(for: client) { sender.name = known.name }
+        try await wire.sendResponse(status: 200, json: EmptyBody(), final: false)
+        await mirrorHandler(sender, MirrorStream(wire))
     }
 
     private func sendPairingRequired(_ wire: Wire) async throws {

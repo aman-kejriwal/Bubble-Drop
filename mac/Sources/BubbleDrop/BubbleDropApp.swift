@@ -22,6 +22,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         Task { @MainActor in AppModel.shared.start() }
     }
+
+    /// Files from the Share menu (`bubbledrop://share?path=…`) or opened with BubbleDrop.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        Task { @MainActor in AppModel.shared.share(urls) }
+    }
 }
 
 struct ContentView: View {
@@ -152,7 +157,8 @@ struct TransferRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Image(systemName: transfer.direction == .incoming ? "arrow.down.circle" : "arrow.up.circle")
+                Image(systemName: transfer.link != nil ? "link.circle"
+                      : transfer.direction == .incoming ? "arrow.down.circle" : "arrow.up.circle")
                 Text(transfer.summary).lineLimit(1)
                 Spacer()
                 if transfer.status == .done {

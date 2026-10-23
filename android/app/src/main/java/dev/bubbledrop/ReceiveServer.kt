@@ -104,6 +104,8 @@ class ReceiveServer(
                 "/api/v2/ask" ->
                     if (!paired) PAIRING_REQUIRED else handleAsk(peer, AskRequest.fromJson(request.readJson()))
                 "/api/v2/upload" -> if (!paired) PAIRING_REQUIRED else handleUpload(peer, request)
+                "/api/v2/link" ->
+                    if (!paired) PAIRING_REQUIRED else handleLink(peer, LinkRequest.fromJson(request.readJson()))
                 "/api/v2/cancel" -> {
                     request.query["sessionId"]?.let { id -> sessions.computeIfPresent(id) { _, v -> v.takeIf { it.client != peer } } }
                     200 to JSONObject()
@@ -115,6 +117,23 @@ class ReceiveServer(
             Log.w(TAG, "request failed", e)
             runCatching { output.writeJsonResponse(400, errorJson(e.message ?: "bad request")) }
         }
+    }
+
+    // Links
+
+    private fun handleLink(client: String, link: LinkRequest): Pair<Int, JSONObject> {
+        if (!receivingEnabled) return 503 to errorJson("receiving is off")
+        if (!isWebLink(link.url)) return 400 to errorJson("only http and https links can be opened")
+        val sender = trust.device(client)?.let { link.sender.copy(name = it.name) } ?: link.sender
+        val opened = Links.open(context, sender, link.url)
+        transfers.upsert(
+            Transfer(
+                id = UUID.randomUUID().toString(), incoming = true, peerName = sender.name,
+                peerPlatform = sender.platform, summary = link.url, totalBytes = 0,
+                status = Transfer.Status.Done, link = link.url, linkOpened = opened,
+            )
+        )
+        return 200 to JSONObject().put("opened", opened)
     }
 
     // Pairing

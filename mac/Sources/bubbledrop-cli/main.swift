@@ -14,6 +14,7 @@ func usage() -> Never {
     usage: bubbledrop-cli serve [--state DIR] [--dir PATH] [--port N] [--name NAME] [--auto-accept]
            bubbledrop-cli browse
            bubbledrop-cli send [--state DIR] [--yes] <device-name | host:port> FILE...
+           bubbledrop-cli link [--state DIR] [--yes] <device-name | host:port> URL
            bubbledrop-cli paired [--state DIR] [--forget FINGERPRINT]
     """)
     exit(2)
@@ -74,6 +75,20 @@ func ask(_ question: String) -> Bool {
 
 let byteFormat = ByteCountFormatter()
 setvbuf(stdout, nil, _IOLBF, 0)
+
+/// A `host:port`, or the name or id of a device found by browsing.
+func resolve(_ target: String) async -> NWEndpoint {
+    if let colon = target.lastIndex(of: ":"), let port = UInt16(target[target.index(after: colon)...]) {
+        return .hostPort(host: NWEndpoint.Host(String(target[..<colon])), port: NWEndpoint.Port(rawValue: port)!)
+    }
+    if let peer = await browse(for: 3).first(where: {
+        $0.name.caseInsensitiveCompare(target) == .orderedSame || $0.id == target
+    }) {
+        return peer.endpoint
+    }
+    print("No device named \"\(target)\" found.")
+    exit(1)
+}
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else { usage() }
@@ -136,23 +151,29 @@ case "paired":
         print("\(device.name)\t\(device.platform)\t\(device.fingerprint)\t\(device.pairedAt)")
     }
 
+case "link":
+    let autoConfirm = flag("--yes", in: &args)
+    guard args.count == 2, let url = URL(string: args[1]), isWebLink(url) else { usage() }
+    let endpoint = await resolve(args[0])
+    let state = try State(directory: stateDir, name: nil)
+    let client = BubbleDropClient(device: state.device, identity: state.identity, trust: state.trust)
+    do {
+        let opened = try await client.send(link: url, to: endpoint, confirmPairing: { prompt in
+            print("Pairing with \(prompt.peerName). Code: \(prompt.code)")
+            if autoConfirm { print("  auto-confirmed"); return true }
+            return ask("Does \(prompt.peerName) show the same code?")
+        })
+        print(opened ? "Opened in the browser." : "Delivered; the receiver got a notification to open it.")
+    } catch {
+        print("Error: \(error.localizedDescription)")
+        exit(1)
+    }
+
 case "send":
     let autoConfirm = flag("--yes", in: &args)
     guard args.count >= 2 else { usage() }
-    let target = args.removeFirst()
+    let endpoint = await resolve(args.removeFirst())
     let files = args.map { URL(fileURLWithPath: $0) }
-    let endpoint: NWEndpoint
-    if let colon = target.lastIndex(of: ":"), let port = UInt16(target[target.index(after: colon)...]) {
-        endpoint = .hostPort(host: NWEndpoint.Host(String(target[..<colon])),
-                             port: NWEndpoint.Port(rawValue: port)!)
-    } else if let peer = await browse(for: 3).first(where: {
-        $0.name.caseInsensitiveCompare(target) == .orderedSame || $0.id == target
-    }) {
-        endpoint = peer.endpoint
-    } else {
-        print("No device named \"\(target)\" found.")
-        exit(1)
-    }
     let state = try State(directory: stateDir, name: nil)
     let client = BubbleDropClient(device: state.device, identity: state.identity, trust: state.trust)
     do {

@@ -20,6 +20,10 @@ struct Transfer: Identifiable {
     var doneBytes: Int64 = 0
     var status: Status
     var files: [URL] = []
+    /// Set when this transfer is a web link rather than files.
+    var link: URL?
+    /// For links: whether the receiver opened it right away (otherwise it showed a notification).
+    var linkOpened = false
     /// When bytes started moving, and how many had moved by then; for speed and time left.
     var startedAt: Date?
     var startBytes: Int64 = 0
@@ -44,6 +48,10 @@ final class AppModel: ObservableObject {
     /// The transfer the drop panel is following.
     @Published private(set) var spotlightId: String?
     var spotlight: Transfer? { transfers.first { $0.id == spotlightId } }
+    /// Files shared from another app, waiting for the user to pick a device in the drop panel.
+    @Published private(set) var shareFiles: [URL] = []
+    /// A web link shared from another app (e.g. Safari), waiting for the user to pick a device.
+    @Published private(set) var shareLink: URL?
     private var offerAnswer: CheckedContinuation<Bool, Never>?
 
     let device = DeviceInfo.local()
@@ -71,6 +79,12 @@ final class AppModel: ObservableObject {
             let server = BubbleDropServer(device: device, identity: identity, trust: trust, saveDirectory: saveDirectory)
             server.askHandler = { request in
                 await AppModel.shared.confirm(request)
+            }
+            server.linkHandler = { sender, url in
+                await AppModel.shared.open(url, from: sender)
+            }
+            server.mirrorHandler = { sender, stream in
+                await MirrorViewer.run(sender: sender, stream: stream)
             }
             server.pairHandler = { request in
                 await MainActor.run {
@@ -162,7 +176,89 @@ final class AppModel: ObservableObject {
 
     func closeSpotlight() {
         spotlightId = nil
-        if offer == nil { DropPanel.shared.dismiss() }
+        if offer == nil, shareFiles.isEmpty, shareLink == nil { DropPanel.shared.dismiss() }
+    }
+
+    // MARK: Links
+
+    /// A paired device sent a web link: open it in the default browser and confirm briefly.
+    private func open(_ url: URL, from sender: DeviceInfo) -> Bool {
+        let opened = NSWorkspace.shared.open(url)
+        let id = UUID().uuidString
+        upsert(Transfer(id: id, direction: .incoming, peerName: sender.name, peerPlatform: sender.platform,
+                        summary: url.absoluteString, totalBytes: 0,
+                        status: opened ? .done : .failed("Couldn't open the link"), link: url, linkOpened: opened))
+        if offer == nil, shareFiles.isEmpty, shareLink == nil {
+            spotlightId = id
+            DropPanel.shared.present(focus: false)
+            hideSpotlight(id, after: 3)
+        }
+        return opened
+    }
+
+    func sendLink(_ url: URL, to peer: Peer) {
+        let id = UUID().uuidString
+        spotlightId = id
+        DropPanel.shared.present(focus: false)
+        upsert(Transfer(id: id, direction: .outgoing, peerName: peer.name, peerPlatform: peer.platform,
+                        summary: url.absoluteString, totalBytes: 0, status: .waiting, link: url))
+        guard let client else { return }
+        Task {
+            do {
+                let opened = try await client.send(link: url, to: peer.endpoint, confirmPairing: { prompt in
+                    await MainActor.run {
+                        AppModel.shared.confirmPairing(
+                            title: "Pair with \(prompt.peerName)?",
+                            detail: "Check that \(prompt.peerName) shows the same code. Pairing is only needed once.",
+                            code: prompt.code)
+                    }
+                })
+                update(id) {
+                    $0.linkOpened = opened
+                    $0.status = .done
+                }
+            } catch {
+                update(id) { $0.status = .failed(error.localizedDescription) }
+            }
+        }
+    }
+
+    // MARK: Share menu
+
+    func share(_ urls: [URL]) {
+        var files: [URL] = []
+        var link: URL?
+        for url in urls {
+            if url.isFileURL {
+                files.append(url)
+            } else if url.scheme == "bubbledrop", url.host == "share",
+                      let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems {
+                files += items.filter { $0.name == "path" }.compactMap(\.value).map { URL(fileURLWithPath: $0) }
+                link = items.first { $0.name == "link" }?.value.flatMap(URL.init(string:)).flatMap {
+                    isWebLink($0) ? $0 : nil
+                } ?? link
+            }
+        }
+        files = files.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !files.isEmpty || link != nil else { return }
+        shareFiles = files
+        shareLink = files.isEmpty ? link : nil
+        spotlightId = nil
+        DropPanel.shared.present(focus: true)
+    }
+
+    func sendShared(to peer: Peer) {
+        let files = shareFiles
+        let link = shareLink
+        shareFiles = []
+        shareLink = nil
+        if let link { sendLink(link, to: peer) } else { send(files, to: peer) }
+    }
+
+    func cancelShare() {
+        shareFiles = []
+        shareLink = nil
+        if offer == nil, spotlightId == nil { DropPanel.shared.dismiss() }
     }
 
     private func handle(_ event: IncomingEvent) {

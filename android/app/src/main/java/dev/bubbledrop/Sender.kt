@@ -29,6 +29,31 @@ class Sender(
     private class Response(val status: Int, val json: JSONObject, val fingerprint: String)
 
     /** Blocking; call from a background thread. */
+    fun sendLink(peer: Peer, url: String) {
+        val transferId = UUID.randomUUID().toString()
+        transfers.upsert(
+            Transfer(
+                id = transferId, incoming = false, peerName = peer.name, peerPlatform = peer.platform,
+                summary = url, totalBytes = 0, status = Transfer.Status.Waiting, link = url,
+            )
+        )
+        try {
+            val pinned = connectPaired(peer)
+            val response = postJson(peer, pinned, "/api/v2/link", LinkRequest(device, url).toJson(), readTimeoutMs = 30_000)
+            when (response.status) {
+                200 -> Unit
+                401 -> throw IOException("${peer.name} no longer trusts this device. Try again to re-pair.")
+                503 -> throw IOException("${peer.name} has receiving turned off.")
+                else -> throw IOException(response.json.optString("error", "Request failed (${response.status})"))
+            }
+            val opened = response.json.optBoolean("opened", false)
+            transfers.update(transferId) { it.copy(status = Transfer.Status.Done, linkOpened = opened) }
+        } catch (e: Exception) {
+            transfers.update(transferId) { it.copy(status = Transfer.Status.Failed(e.message ?: "Send failed")) }
+        }
+    }
+
+    /** Blocking; call from a background thread. */
     fun send(peer: Peer, uris: List<Uri>) {
         val transferId = UUID.randomUUID().toString()
         var items: List<Item> = emptyList()
@@ -85,7 +110,8 @@ class Sender(
      * Discovers [peer] and pairs with it unless both sides already trust each other.
      * Returns the certificate fingerprint every later request is pinned to.
      */
-    private fun connectPaired(peer: Peer): String {
+    /** The paired certificate fingerprint of [peer], pairing first if needed. Blocking. */
+    fun connectPaired(peer: Peer): String {
         val discover = postJson(peer, null, "/api/v2/discover", device.toJson(), readTimeoutMs = 15_000)
         if (discover.status != 200) throw IOException("Couldn't reach ${peer.name} (${discover.status})")
         val fingerprint = discover.fingerprint

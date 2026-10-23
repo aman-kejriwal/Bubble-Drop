@@ -59,6 +59,8 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     /** Files handed to us from another app's share sheet, waiting for a device to be picked. */
     private var sharedUris by mutableStateOf<List<Uri>>(emptyList())
+    /** A web link shared from a browser or other app, waiting for a device to be picked. */
+    private var sharedLink by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,9 +79,22 @@ class MainActivity : ComponentActivity() {
                     if (needed.isEmpty()) BubbleDropService.start(this@MainActivity)
                     else permissions.launch(needed.toTypedArray())
                 }
-                MainScreen(sharedUris = sharedUris, onClearShared = { sharedUris = emptyList() })
+                MainScreen(sharedUris = sharedUris, sharedLink = sharedLink, onClearShared = {
+                    sharedUris = emptyList()
+                    sharedLink = null
+                })
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Links.appVisible = true
+    }
+
+    override fun onPause() {
+        Links.appVisible = false
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -94,7 +109,15 @@ class MainActivity : ComponentActivity() {
                 IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
             else -> emptyList()
         }
-        if (uris.isNotEmpty()) sharedUris = uris
+        if (uris.isNotEmpty()) {
+            sharedUris = uris
+            sharedLink = null
+        } else if (intent?.action == Intent.ACTION_SEND) {
+            intent.getStringExtra(Intent.EXTRA_TEXT)?.let(::firstWebLink)?.let {
+                sharedLink = it
+                sharedUris = emptyList()
+            }
+        }
     }
 
     companion object {
@@ -105,7 +128,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
+private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared: () -> Unit) {
     val context = LocalContext.current
     val peers by Graph.discovery.peers.collectAsState()
     val transfers by Graph.transfers.transfers.collectAsState()
@@ -113,6 +136,27 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
     val pending by Graph.prompts.current.collectAsState()
     val trusted by Graph.trust.devices.collectAsState()
     var pickTarget by remember { mutableStateOf<Peer?>(null) }
+    var mirrorTarget by remember { mutableStateOf<Peer?>(null) }
+    val mirroringTo by MirrorService.active.collectAsState()
+    val mirrorError by MirrorService.error.collectAsState()
+    val mirrorConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val peer = mirrorTarget
+        val data = result.data
+        if (peer != null && result.resultCode == android.app.Activity.RESULT_OK && data != null) {
+            MirrorService.start(context, peer, result.resultCode, data)
+        }
+        mirrorTarget = null
+    }
+    fun mirror(peer: Peer) {
+        mirrorTarget = peer
+        MirrorService.clearError()
+        mirrorConsent.launch(
+            context.getSystemService(android.media.projection.MediaProjectionManager::class.java)
+                .createScreenCaptureIntent()
+        )
+    }
+
+    val sharing = sharedUris.isNotEmpty() || sharedLink != null
 
     fun send(peer: Peer, uris: List<Uri>) {
         if (uris.isEmpty()) return
@@ -164,14 +208,46 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
                 }
             }
 
-            if (sharedUris.isNotEmpty()) {
+            mirroringTo?.let { name ->
                 item {
                     Card(Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Tap a device to send ${if (sharedUris.size == 1) "1 item" else "${sharedUris.size} items"}",
-                                Modifier.weight(1f),
-                            )
+                            Column(Modifier.weight(1f)) {
+                                Text("Mirroring to $name", style = MaterialTheme.typography.titleSmall)
+                                Text("Your screen is visible on $name", style = MaterialTheme.typography.bodySmall)
+                            }
+                            TextButton(onClick = { MirrorService.stop(context) }) { Text("Stop") }
+                        }
+                    }
+                }
+            }
+            mirrorError?.let { message ->
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Mirroring stopped: $message", color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { MirrorService.clearError() }) { Text("OK") }
+                    }
+                }
+            }
+
+            if (sharing) {
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    when {
+                                        sharedLink != null -> "Tap a device to open this link there"
+                                        sharedUris.size == 1 -> "Tap a device to send 1 item"
+                                        else -> "Tap a device to send ${sharedUris.size} items"
+                                    }
+                                )
+                                sharedLink?.let {
+                                    Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis)
+                                }
+                            }
                             TextButton(onClick = onClearShared) { Text("Cancel") }
                         }
                     }
@@ -195,7 +271,10 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
             items(peers, key = { it.id }) { peer ->
                 Card(
                     Modifier.fillMaxWidth().clickable {
-                        if (sharedUris.isNotEmpty()) {
+                        if (sharedLink != null) {
+                            Graph.scope.launch { Graph.sender.sendLink(peer, sharedLink) }
+                            onClearShared()
+                        } else if (sharedUris.isNotEmpty()) {
                             send(peer, sharedUris)
                             onClearShared()
                         } else {
@@ -217,8 +296,15 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
                             }
                             Text(peer.model, style = MaterialTheme.typography.bodySmall, maxLines = 1)
                         }
-                        Text(if (sharedUris.isNotEmpty()) "Send" else "Choose files",
-                            color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(if (sharing) "Send" else "Choose files",
+                                color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                            if (!sharing && peer.platform == "macos" && mirroringTo == null) {
+                                TextButton(onClick = { mirror(peer) }, contentPadding = PaddingValues(0.dp)) {
+                                    Text("Mirror screen", style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -310,6 +396,28 @@ private fun PairingDialog(title: String, detail: String, code: String, respond: 
 
 @Composable
 private fun TransferRow(transfer: Transfer) {
+    val context = LocalContext.current
+    val link = transfer.link
+    if (link != null) {
+        Column(Modifier.fillMaxWidth().clickable { runCatching { context.startActivity(Links.viewIntent(link)) } }) {
+            Text("🔗 ${transfer.summary}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                when (val status = transfer.status) {
+                    is Transfer.Status.Failed -> status.message
+                    Transfer.Status.Done -> when {
+                        transfer.incoming -> "From ${transfer.peerName} · tap to open"
+                        transfer.linkOpened -> "Opened on ${transfer.peerName}"
+                        else -> "Sent to ${transfer.peerName}"
+                    }
+                    else -> "Sending to ${transfer.peerName}…"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (transfer.status is Transfer.Status.Failed) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
     Column(Modifier.fillMaxWidth()) {
         Text("${if (transfer.incoming) "↓" else "↑"} ${transfer.summary}", maxLines = 1, overflow = TextOverflow.Ellipsis)
         when (val status = transfer.status) {
