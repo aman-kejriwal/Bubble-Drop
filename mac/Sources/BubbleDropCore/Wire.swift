@@ -27,14 +27,14 @@ final class Wire {
                     once.run { cont.resume(throwing: error) }
                     conn.cancel()
                 case .cancelled:
-                    once.run { cont.resume(throwing: MyDropError.timeout) }
+                    once.run { cont.resume(throwing: BubbleDropError.timeout) }
                 default:
                     break
                 }
             }
             conn.start(queue: .global())
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                once.run { cont.resume(throwing: MyDropError.timeout) }
+                once.run { cont.resume(throwing: BubbleDropError.timeout) }
                 if conn.state != .ready { conn.cancel() }
             }
         }
@@ -80,7 +80,7 @@ final class Wire {
                 }
             }
         } catch {
-            throw timedOut ? MyDropError.timeout : error
+            throw timedOut ? BubbleDropError.timeout : error
         }
     }
 
@@ -92,18 +92,18 @@ final class Wire {
                 buffer.removeSubrange(buffer.startIndex..<range.upperBound)
                 return head
             }
-            if buffer.count > limit { throw MyDropError.badMessage("header too large") }
+            if buffer.count > limit { throw BubbleDropError.badMessage("header too large") }
             guard let chunk = try await receiveChunk() else {
-                throw timedOut ? MyDropError.timeout : MyDropError.connectionClosed
+                throw timedOut ? BubbleDropError.timeout : BubbleDropError.connectionClosed
             }
             buffer.append(chunk)
         }
     }
 
     func readBody(length: Int, limit: Int = 1 << 20) async throws -> Data {
-        guard length <= limit else { throw MyDropError.badMessage("body too large") }
+        guard length <= limit else { throw BubbleDropError.badMessage("body too large") }
         while buffer.count < length {
-            guard let chunk = try await receiveChunk() else { throw MyDropError.connectionClosed }
+            guard let chunk = try await receiveChunk() else { throw BubbleDropError.connectionClosed }
             buffer.append(chunk)
         }
         let body = buffer.prefix(length)
@@ -122,7 +122,7 @@ final class Wire {
                 buffer = Data()
             } else {
                 arm(idleTimeout)
-                guard let next = try await receiveChunk() else { throw MyDropError.connectionClosed }
+                guard let next = try await receiveChunk() else { throw BubbleDropError.connectionClosed }
                 chunk = next
             }
             let take = Int(min(Int64(chunk.count), length - written))
@@ -165,10 +165,10 @@ struct RequestHead {
     var contentLength: Int64 { Int64(headers["content-length"] ?? "") ?? 0 }
 
     init(_ data: Data) throws {
-        guard let text = String(data: data, encoding: .utf8) else { throw MyDropError.badMessage("encoding") }
+        guard let text = String(data: data, encoding: .utf8) else { throw BubbleDropError.badMessage("encoding") }
         var lines = text.components(separatedBy: "\r\n")
         let parts = lines.removeFirst().split(separator: " ")
-        guard parts.count >= 2 else { throw MyDropError.badMessage("request line") }
+        guard parts.count >= 2 else { throw BubbleDropError.badMessage("request line") }
         method = String(parts[0])
         let components = URLComponents(string: String(parts[1]))
         path = components?.path ?? String(parts[1])
@@ -183,10 +183,10 @@ struct ResponseHead {
     var headers: [String: String]
 
     init(_ data: Data) throws {
-        guard let text = String(data: data, encoding: .utf8) else { throw MyDropError.badMessage("encoding") }
+        guard let text = String(data: data, encoding: .utf8) else { throw BubbleDropError.badMessage("encoding") }
         var lines = text.components(separatedBy: "\r\n")
         let parts = lines.removeFirst().split(separator: " ")
-        guard parts.count >= 2, let code = Int(parts[1]) else { throw MyDropError.badMessage("status line") }
+        guard parts.count >= 2, let code = Int(parts[1]) else { throw BubbleDropError.badMessage("status line") }
         status = code
         headers = parseHeaders(lines)
     }

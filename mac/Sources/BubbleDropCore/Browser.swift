@@ -21,7 +21,7 @@ public struct Peer: Identifiable, Hashable, Sendable {
     }
 }
 
-/// Finds other MyDrop devices advertising `_mydrop._tcp` on the local network.
+/// Finds other BubbleDrop devices advertising `_bubbledrop._tcp` on the local network.
 public final class PeerBrowser {
     public var onChange: ([Peer]) -> Void = { _ in }
     private let selfId: String
@@ -32,7 +32,7 @@ public final class PeerBrowser {
     }
 
     public func start(queue: DispatchQueue = .main) {
-        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: myDropServiceType, domain: nil),
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: bubbleDropServiceType, domain: nil),
                                 using: NWParameters())
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self else { return }

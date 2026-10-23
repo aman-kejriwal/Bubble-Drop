@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.net.Uri
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -9,6 +9,8 @@ data class Transfer(
     val id: String,
     val incoming: Boolean,
     val peerName: String,
+    /** `macos` or `android`; picks the device glyph in the transfer card. */
+    val peerPlatform: String = "",
     val summary: String,
     val totalBytes: Long,
     val doneBytes: Long = 0,

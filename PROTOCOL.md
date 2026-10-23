@@ -1,20 +1,20 @@
-# MyDrop protocol v2
+# BubbleDrop protocol v2
 
 An AirDrop-style flow (Discover → Pair → Ask → Upload), rebuilt on transports that both
 macOS and Android support. Apple's AirDrop runs over AWDL with Apple ID certificates;
-MyDrop runs over the shared Wi-Fi/LAN with self-signed certificates and one-time pairing.
+BubbleDrop runs over the shared Wi-Fi/LAN with self-signed certificates and one-time pairing.
 
 ## Identity
 
 Each device has a long-lived P-256 key and a self-signed X.509 certificate (macOS: a PKCS#12
-file in `~/Library/Application Support/MyDrop`; Android: the Android Keystore). A device is
+file in `~/Library/Application Support/BubbleDrop`; Android: the Android Keystore). A device is
 identified by its **fingerprint**: lowercase hex SHA-256 of the certificate's DER bytes.
 
 ## Discovery
 
 Each receiver advertises a DNS-SD (Bonjour / NSD) service:
 
-- Type: `_mydrop._tcp`
+- Type: `_bubbledrop._tcp`
 - Instance name: the device's human-readable name (the system may add a suffix)
 - TXT record:
 
@@ -78,8 +78,8 @@ in the TLS handshake (64-char hex, as UTF-8 bytes). `Nc` and `Ns` are 32 random 
 is concatenation.
 
 ```
-commitment = SHA-256("mydrop-commit-v2" ‖ Fc ‖ Fs ‖ Ns)
-code       = big-endian uint32 of SHA-256("mydrop-code-v2" ‖ Fc ‖ Fs ‖ Nc ‖ Ns)[0..4]
+commitment = SHA-256("bubbledrop-commit-v2" ‖ Fc ‖ Fs ‖ Ns)
+code       = big-endian uint32 of SHA-256("bubbledrop-code-v2" ‖ Fc ‖ Fs ‖ Nc ‖ Ns)[0..4]
              mod 1 000 000, zero-padded to 6 digits
 ```
 

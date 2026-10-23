@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>dev.mydrop.mac</string>
+	<string>dev.bubbledrop.mac</string>
 	<key>CFBundleName</key>
-	<string>MyDrop</string>
+	<string>BubbleDrop</string>
 	<key>CFBundleExecutable</key>
-	<string>MyDrop</string>
+	<string>BubbleDrop</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -19,10 +19,10 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>MyDrop finds nearby phones and computers on your Wi-Fi to send and receive files.</string>
+	<string>BubbleDrop finds nearby phones and computers on your Wi-Fi to send and receive files.</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_mydrop._tcp</string>
+		<string>_bubbledrop._tcp</string>
 	</array>
 </dict>
 </plist>

@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.annotation.SuppressLint
 import android.app.Application
@@ -15,7 +15,7 @@ import java.util.UUID
 const val CHANNEL_SERVICE = "service"
 const val CHANNEL_INCOMING = "incoming"
 
-/** App-wide singletons, created once in [MyDropApplication]. */
+/** App-wide singletons, created once in [BubbleDropApplication]. */
 @SuppressLint("StaticFieldLeak")
 object Graph {
     lateinit var device: DeviceInfo
@@ -49,7 +49,7 @@ object Graph {
     }
 
     private fun deviceId(context: Context): String {
-        val prefs = context.getSharedPreferences("mydrop", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences("bubbledrop", Context.MODE_PRIVATE)
         return prefs.getString("deviceId", null) ?: UUID.randomUUID().toString().also {
             prefs.edit().putString("deviceId", it).apply()
         }
@@ -60,7 +60,7 @@ object Graph {
             ?.takeIf { it.isNotBlank() } ?: Build.MODEL
 }
 
-class MyDropApplication : Application() {
+class BubbleDropApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         Graph.init(this)

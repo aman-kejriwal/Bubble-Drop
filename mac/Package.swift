@@ -4,15 +4,15 @@ import PackageDescription
 let swift5: [SwiftSetting] = [.unsafeFlags(["-swift-version", "5"])]
 
 let package = Package(
-    name: "MyDrop",
+    name: "BubbleDrop",
     platforms: [.macOS(.v15)],
     products: [
-        .executable(name: "MyDrop", targets: ["MyDrop"]),
-        .executable(name: "mydrop-cli", targets: ["mydrop-cli"]),
+        .executable(name: "BubbleDrop", targets: ["BubbleDrop"]),
+        .executable(name: "bubbledrop-cli", targets: ["bubbledrop-cli"]),
     ],
     targets: [
-        .target(name: "MyDropCore", swiftSettings: swift5),
-        .executableTarget(name: "MyDrop", dependencies: ["MyDropCore"], swiftSettings: swift5),
-        .executableTarget(name: "mydrop-cli", dependencies: ["MyDropCore"], swiftSettings: swift5),
+        .target(name: "BubbleDropCore", swiftSettings: swift5),
+        .executableTarget(name: "BubbleDrop", dependencies: ["BubbleDropCore"], swiftSettings: swift5),
+        .executableTarget(name: "bubbledrop-cli", dependencies: ["BubbleDropCore"], swiftSettings: swift5),
     ]
 )

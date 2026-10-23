@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream

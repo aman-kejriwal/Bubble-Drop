@@ -14,7 +14,7 @@ public final class TLSIdentity {
         self.fingerprint = fingerprint
     }
 
-    private static let passphrase = "mydrop"
+    private static let passphrase = "bubbledrop"
 
     /// Loads `identity.p12` from `directory`, generating it on first use.
     public static func loadOrCreate(directory: URL) throws -> TLSIdentity {
@@ -35,7 +35,7 @@ public final class TLSIdentity {
                 return identity
             }
         }
-        throw MyDropError.badMessage("could not create a TLS identity")
+        throw BubbleDropError.badMessage("could not create a TLS identity")
     }
 
     private static func importIdentity(_ data: Data) -> TLSIdentity? {
@@ -57,7 +57,7 @@ public final class TLSIdentity {
     }
 
     private static func generate() throws -> Data {
-        let work = FileManager.default.temporaryDirectory.appendingPathComponent("mydrop-\(UUID().uuidString)")
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("bubbledrop-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: work) }
@@ -66,7 +66,7 @@ public final class TLSIdentity {
         let out = work.appendingPathComponent("identity.p12").path
         try openssl(["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", key])
         try openssl(["req", "-new", "-x509", "-key", key, "-out", cert, "-days", "3650",
-                     "-subj", "/CN=MyDrop", "-sha256"])
+                     "-subj", "/CN=BubbleDrop", "-sha256"])
         try openssl(["pkcs12", "-export", "-inkey", key, "-in", cert, "-out", out,
                      "-passout", "pass:\(passphrase)"])
         return try Data(contentsOf: URL(fileURLWithPath: out))
@@ -81,7 +81,7 @@ public final class TLSIdentity {
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw MyDropError.badMessage("openssl \(arguments[0]) failed")
+            throw BubbleDropError.badMessage("openssl \(arguments[0]) failed")
         }
     }
 
@@ -126,14 +126,14 @@ func peerFingerprint(of connection: NWConnection) -> String? {
 /// Commit-then-reveal numeric comparison (see PROTOCOL.md "Pairing").
 enum PairingMath {
     static func commitment(clientFingerprint: String, serverFingerprint: String, serverNonce: Data) -> Data {
-        var input = Data("mydrop-commit-v2".utf8)
+        var input = Data("bubbledrop-commit-v2".utf8)
         input += Data(clientFingerprint.utf8) + Data(serverFingerprint.utf8) + serverNonce
         return Data(SHA256.hash(data: input))
     }
 
     static func code(clientFingerprint: String, serverFingerprint: String,
                      clientNonce: Data, serverNonce: Data) -> String {
-        var input = Data("mydrop-code-v2".utf8)
+        var input = Data("bubbledrop-code-v2".utf8)
         input += Data(clientFingerprint.utf8) + Data(serverFingerprint.utf8) + clientNonce + serverNonce
         let digest = Array(SHA256.hash(data: input))
         let value = UInt32(digest[0]) << 24 | UInt32(digest[1]) << 16 | UInt32(digest[2]) << 8 | UInt32(digest[3])

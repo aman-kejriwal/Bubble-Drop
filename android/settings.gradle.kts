@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MyDrop"
+rootProject.name = "BubbleDrop"
 include(":app")

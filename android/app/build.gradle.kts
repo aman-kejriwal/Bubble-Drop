@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.mydrop"
+    namespace = "dev.bubbledrop"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "dev.mydrop"
+        applicationId = "dev.bubbledrop"
         minSdk = 29
         targetSdk = 37
         versionCode = 1

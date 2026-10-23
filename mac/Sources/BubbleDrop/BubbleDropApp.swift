@@ -1,15 +1,15 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
-import MyDropCore
+import BubbleDropCore
 
 @main
-struct MyDropApp: App {
+struct BubbleDropApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ObservedObject private var model = AppModel.shared
 
     var body: some Scene {
-        MenuBarExtra("MyDrop", systemImage: "paperplane.circle.fill") {
+        MenuBarExtra("BubbleDrop", systemImage: "paperplane.circle.fill") {
             ContentView()
                 .environmentObject(model)
         }
@@ -31,7 +31,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("MyDrop").font(.headline)
+                    Text("BubbleDrop").font(.headline)
                     Text(model.device.name).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -50,7 +50,7 @@ struct ContentView: View {
             if model.peers.isEmpty {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Looking for devices… Open MyDrop on your phone and join the same Wi-Fi.")
+                    Text("Looking for devices… Open BubbleDrop on your phone and join the same Wi-Fi.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.content.Context
 import android.net.nsd.NsdManager
@@ -31,7 +31,7 @@ data class Peer(
         }
 }
 
-/** Advertises this device and browses for others over DNS-SD (`_mydrop._tcp`). */
+/** Advertises this device and browses for others over DNS-SD (`_bubbledrop._tcp`). */
 class Discovery(context: Context, private val device: DeviceInfo, private val fingerprint: String) {
     private val nsd = context.getSystemService(NsdManager::class.java)
     private val _peers = MutableStateFlow<List<Peer>>(emptyList())
@@ -145,6 +145,6 @@ class Discovery(context: Context, private val device: DeviceInfo, private val fi
     }
 
     companion object {
-        private const val TAG = "MyDropDiscovery"
+        private const val TAG = "BubbleDropDiscovery"
     }
 }

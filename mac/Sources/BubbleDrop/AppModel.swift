@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import MyDropCore
+import BubbleDropCore
 
 struct Transfer: Identifiable {
     enum Direction { case incoming, outgoing }
@@ -14,11 +14,15 @@ struct Transfer: Identifiable {
     let id: String
     let direction: Direction
     var peerName: String
+    var peerPlatform = ""
     var summary: String
     var totalBytes: Int64
     var doneBytes: Int64 = 0
     var status: Status
     var files: [URL] = []
+    /// When bytes started moving, and how many had moved by then; for speed and time left.
+    var startedAt: Date?
+    var startBytes: Int64 = 0
 
     var fraction: Double { totalBytes > 0 ? Double(doneBytes) / Double(totalBytes) : 0 }
 }
@@ -35,13 +39,19 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var trustedDevices: [TrustedDevice] = []
     @Published private(set) var startupError: String?
+    /// The request currently asking for Accept / Decline in the drop panel.
+    @Published private(set) var offer: IncomingOffer?
+    /// The transfer the drop panel is following.
+    @Published private(set) var spotlightId: String?
+    var spotlight: Transfer? { transfers.first { $0.id == spotlightId } }
+    private var offerAnswer: CheckedContinuation<Bool, Never>?
 
     let device = DeviceInfo.local()
     let saveDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
     private let stateDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("MyDrop")
-    private var server: MyDropServer?
-    private var client: MyDropClient?
+        .appendingPathComponent("BubbleDrop")
+    private var server: BubbleDropServer?
+    private var client: BubbleDropClient?
     private var trust: TrustStore?
     private let browser: PeerBrowser
     private var pairingAlertOpen = false
@@ -58,9 +68,9 @@ final class AppModel: ObservableObject {
             let trust = TrustStore(file: stateDirectory.appendingPathComponent("trusted.json"))
             trust.onChange = { Task { @MainActor in AppModel.shared.trustedDevices = trust.all } }
             trustedDevices = trust.all
-            let server = MyDropServer(device: device, identity: identity, trust: trust, saveDirectory: saveDirectory)
+            let server = BubbleDropServer(device: device, identity: identity, trust: trust, saveDirectory: saveDirectory)
             server.askHandler = { request in
-                await MainActor.run { AppModel.shared.confirm(request) }
+                await AppModel.shared.confirm(request)
             }
             server.pairHandler = { request in
                 await MainActor.run {
@@ -80,9 +90,9 @@ final class AppModel: ObservableObject {
             try server.start()
             self.trust = trust
             self.server = server
-            client = MyDropClient(device: device, identity: identity, trust: trust)
+            client = BubbleDropClient(device: device, identity: identity, trust: trust)
         } catch {
-            startupError = "MyDrop couldn't start: \(error.localizedDescription)"
+            startupError = "BubbleDrop couldn't start: \(error.localizedDescription)"
         }
     }
 
@@ -116,25 +126,55 @@ final class AppModel: ObservableObject {
 
     // MARK: Receiving
 
-    private func confirm(_ request: AskRequest) -> Bool {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        let count = request.files.count
-        alert.messageText = "\(request.sender.name) wants to send you \(count == 1 ? request.files[0].name : "\(count) files")"
-        let names = request.files.prefix(8).map { "• \($0.name)" }.joined(separator: "\n")
-        let more = count > 8 ? "\n…and \(count - 8) more" : ""
-        alert.informativeText = "\(names)\(more)\n\n\(formatBytes(request.totalSize)) · saved to Downloads"
-        alert.addButton(withTitle: "Accept")
-        alert.addButton(withTitle: "Decline")
-        return alert.runModal() == .alertFirstButtonReturn
+    /// Shows the offer in the drop panel and waits for Accept / Decline (declining after 120 s,
+    /// when the sender has stopped waiting anyway).
+    private func confirm(_ request: AskRequest) async -> Bool {
+        answerOffer(false)
+        let offer = IncomingOffer(senderName: request.sender.name, platform: request.sender.platform,
+                                  fileNames: request.files.map(\.name), totalBytes: request.totalSize)
+        return await withCheckedContinuation { continuation in
+            offerAnswer = continuation
+            self.offer = offer
+            spotlightId = nil
+            NSSound(named: "Pop")?.play()
+            DropPanel.shared.present(focus: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
+                MainActor.assumeIsolated {
+                    if let current = AppModel.shared.offer, current.id == offer.id, !current.accepted {
+                        AppModel.shared.answerOffer(false)
+                    }
+                }
+            }
+        }
+    }
+
+    func answerOffer(_ accept: Bool) {
+        guard let answer = offerAnswer else { return }
+        offerAnswer = nil
+        if accept {
+            offer?.accepted = true
+        } else {
+            offer = nil
+            if spotlightId == nil { DropPanel.shared.dismiss() }
+        }
+        answer.resume(returning: accept)
+    }
+
+    func closeSpotlight() {
+        spotlightId = nil
+        if offer == nil { DropPanel.shared.dismiss() }
     }
 
     private func handle(_ event: IncomingEvent) {
         switch event {
         case .accepted(let id, let request):
             upsert(Transfer(id: id, direction: .incoming, peerName: request.sender.name,
+                            peerPlatform: request.sender.platform,
                             summary: describe(request.files.map(\.name)), totalBytes: request.totalSize,
                             status: .active))
+            offer = nil
+            spotlightId = id
+            DropPanel.shared.present(focus: false)
         case .progress(let id, let received):
             update(id) { $0.doneBytes = received }
         case .fileReceived(let id, let url):
@@ -167,7 +207,9 @@ final class AppModel: ObservableObject {
         let total = urls.reduce(Int64(0)) { sum, url in
             sum + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
-        upsert(Transfer(id: id, direction: .outgoing, peerName: peer.name,
+        spotlightId = id
+        DropPanel.shared.present(focus: false)
+        upsert(Transfer(id: id, direction: .outgoing, peerName: peer.name, peerPlatform: peer.platform,
                         summary: describe(urls.map(\.lastPathComponent)), totalBytes: total,
                         status: .waiting, files: urls))
         guard let client else { return }
@@ -225,7 +267,33 @@ final class AppModel: ObservableObject {
 
     private func update(_ id: String, _ change: (inout Transfer) -> Void) {
         guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
+        let before = transfers[i].status
         change(&transfers[i])
+        let after = transfers[i].status
+        if after == .active, transfers[i].startedAt == nil {
+            transfers[i].startedAt = Date()
+            transfers[i].startBytes = transfers[i].doneBytes
+        }
+        guard before != after, id == spotlightId else { return }
+        switch after {
+        case .done:
+            NSSound(named: "Glass")?.play()
+            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            hideSpotlight(id, after: 4)
+        case .failed:
+            NSSound(named: "Basso")?.play()
+            hideSpotlight(id, after: 8)
+        default:
+            break
+        }
+    }
+
+    private func hideSpotlight(_ id: String, after seconds: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            MainActor.assumeIsolated {
+                if AppModel.shared.spotlightId == id { AppModel.shared.closeSpotlight() }
+            }
+        }
     }
 
     private func describe(_ names: [String]) -> String {

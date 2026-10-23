@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.app.PendingIntent
 import android.app.Service
@@ -14,8 +14,8 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** Keeps the receiver and Bonjour advertising alive while MyDrop is on. */
-class MyDropService : Service() {
+/** Keeps the receiver and Bonjour advertising alive while BubbleDrop is on. */
+class BubbleDropService : Service() {
     private var multicastLock: WifiManager.MulticastLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -23,12 +23,12 @@ class MyDropService : Service() {
     override fun onCreate() {
         super.onCreate()
         val stop = PendingIntent.getService(
-            this, 0, Intent(this, MyDropService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
+            this, 0, Intent(this, BubbleDropService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(this, CHANNEL_SERVICE)
             .setSmallIcon(android.R.drawable.stat_sys_upload_done)
-            .setContentTitle("MyDrop is on")
+            .setContentTitle("BubbleDrop is on")
             .setContentText("Visible to nearby devices as ${Graph.device.name}")
             .setContentIntent(open)
             .addAction(0, "Turn off", stop)
@@ -37,18 +37,18 @@ class MyDropService : Service() {
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
 
-        multicastLock = getSystemService(WifiManager::class.java).createMulticastLock("mydrop").apply {
+        multicastLock = getSystemService(WifiManager::class.java).createMulticastLock("bubbledrop").apply {
             setReferenceCounted(false)
             acquire()
         }
         try {
             val port = Graph.server.start()
-            Log.i("MyDropService", "receiving on port $port")
+            Log.i("BubbleDropService", "receiving on port $port")
             Graph.discovery.register(port)
             Graph.discovery.startBrowsing()
             _running.value = true
         } catch (e: Exception) {
-            Log.e("MyDropService", "start failed", e)
+            Log.e("BubbleDropService", "start failed", e)
             stopSelf()
         }
     }
@@ -68,13 +68,13 @@ class MyDropService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1
-        private const val ACTION_STOP = "dev.mydrop.STOP"
+        private const val ACTION_STOP = "dev.bubbledrop.STOP"
         private val _running = MutableStateFlow(false)
         val running: StateFlow<Boolean> = _running
 
         fun start(context: Context) =
-            ContextCompat.startForegroundService(context, Intent(context, MyDropService::class.java))
+            ContextCompat.startForegroundService(context, Intent(context, BubbleDropService::class.java))
 
-        fun stop(context: Context) = context.stopService(Intent(context, MyDropService::class.java))
+        fun stop(context: Context) = context.stopService(Intent(context, BubbleDropService::class.java))
     }
 }

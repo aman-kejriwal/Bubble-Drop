@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -40,7 +40,7 @@ class TlsIdentity private constructor(val privateKey: PrivateKey, val certificat
         }
 
     companion object {
-        private const val ALIAS = "mydrop-tls"
+        private const val ALIAS = "bubbledrop-tls"
 
         fun loadOrCreate(): TlsIdentity {
             val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -54,7 +54,7 @@ class TlsIdentity private constructor(val privateKey: PrivateKey, val certificat
                                 KeyProperties.DIGEST_NONE, KeyProperties.DIGEST_SHA256,
                                 KeyProperties.DIGEST_SHA384, KeyProperties.DIGEST_SHA512,
                             )
-                            .setCertificateSubject(X500Principal("CN=MyDrop"))
+                            .setCertificateSubject(X500Principal("CN=BubbleDrop"))
                             .setCertificateSerialNumber(BigInteger.valueOf(now))
                             .setCertificateNotBefore(Date(now - 24L * 3600 * 1000))
                             .setCertificateNotAfter(Date(now + 10L * 365 * 24 * 3600 * 1000))
@@ -93,7 +93,7 @@ private class SingleKeyManager(
     override fun getPrivateKey(alias: String?) = key
 
     companion object {
-        const val ALIAS = "mydrop"
+        const val ALIAS = "bubbledrop"
     }
 }
 
@@ -124,11 +124,11 @@ class PinningTrustManager(private val pinned: String? = null) : X509TrustManager
 /** Commit-then-reveal numeric comparison (PROTOCOL.md "Pairing"). */
 object PairingMath {
     fun commitment(clientFingerprint: String, serverFingerprint: String, serverNonce: ByteArray): ByteArray =
-        sha256("mydrop-commit-v2".toByteArray() + clientFingerprint.toByteArray() +
+        sha256("bubbledrop-commit-v2".toByteArray() + clientFingerprint.toByteArray() +
             serverFingerprint.toByteArray() + serverNonce)
 
     fun code(clientFingerprint: String, serverFingerprint: String, clientNonce: ByteArray, serverNonce: ByteArray): String {
-        val digest = sha256("mydrop-code-v2".toByteArray() + clientFingerprint.toByteArray() +
+        val digest = sha256("bubbledrop-code-v2".toByteArray() + clientFingerprint.toByteArray() +
             serverFingerprint.toByteArray() + clientNonce + serverNonce)
         val value = ((digest[0].toLong() and 0xff) shl 24) or ((digest[1].toLong() and 0xff) shl 16) or
             ((digest[2].toLong() and 0xff) shl 8) or (digest[3].toLong() and 0xff)

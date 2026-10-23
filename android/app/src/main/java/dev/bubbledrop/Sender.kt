@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.content.Context
 import android.net.Uri
@@ -34,7 +34,8 @@ class Sender(
         var items: List<Item> = emptyList()
         transfers.upsert(
             Transfer(
-                id = transferId, incoming = false, peerName = peer.name, summary = "Preparing…",
+                id = transferId, incoming = false, peerName = peer.name, peerPlatform = peer.platform,
+                summary = "Preparing…",
                 totalBytes = 0, status = Transfer.Status.Waiting,
             )
         )

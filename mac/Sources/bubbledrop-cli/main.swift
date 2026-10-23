@@ -1,20 +1,20 @@
 import Foundation
 import Network
-import MyDropCore
+import BubbleDropCore
 
-// Headless MyDrop for testing and scripting. Each --state directory is a separate device
+// Headless BubbleDrop for testing and scripting. Each --state directory is a separate device
 // (its own TLS identity and paired-device list).
-//   mydrop-cli serve [--state DIR] [--dir PATH] [--port N] [--name NAME] [--auto-accept]
-//   mydrop-cli browse
-//   mydrop-cli send [--state DIR] [--yes] <device-name | host:port> FILE...
-//   mydrop-cli paired [--state DIR] [--forget FINGERPRINT]
+//   bubbledrop-cli serve [--state DIR] [--dir PATH] [--port N] [--name NAME] [--auto-accept]
+//   bubbledrop-cli browse
+//   bubbledrop-cli send [--state DIR] [--yes] <device-name | host:port> FILE...
+//   bubbledrop-cli paired [--state DIR] [--forget FINGERPRINT]
 
 func usage() -> Never {
     print("""
-    usage: mydrop-cli serve [--state DIR] [--dir PATH] [--port N] [--name NAME] [--auto-accept]
-           mydrop-cli browse
-           mydrop-cli send [--state DIR] [--yes] <device-name | host:port> FILE...
-           mydrop-cli paired [--state DIR] [--forget FINGERPRINT]
+    usage: bubbledrop-cli serve [--state DIR] [--dir PATH] [--port N] [--name NAME] [--auto-accept]
+           bubbledrop-cli browse
+           bubbledrop-cli send [--state DIR] [--yes] <device-name | host:port> FILE...
+           bubbledrop-cli paired [--state DIR] [--forget FINGERPRINT]
     """)
     exit(2)
 }
@@ -52,7 +52,7 @@ struct State {
     let trust: TrustStore
 
     init(directory: URL, name: String?) throws {
-        let defaults = UserDefaults(suiteName: "mydrop-cli-\(directory.path.hashValue)") ?? .standard
+        let defaults = UserDefaults(suiteName: "bubbledrop-cli-\(directory.path.hashValue)") ?? .standard
         var device = DeviceInfo.local(defaults: defaults, name: name)
         let idFile = directory.appendingPathComponent("device-id")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -80,7 +80,7 @@ guard let command = args.first else { usage() }
 args.removeFirst()
 let stateDir = option("--state", in: &args).map { URL(fileURLWithPath: $0) }
     ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("MyDrop-cli")
+        .appendingPathComponent("BubbleDrop-cli")
 
 switch command {
 case "serve":
@@ -90,7 +90,7 @@ case "serve":
     let state = try State(directory: stateDir, name: option("--name", in: &args))
     let autoAccept = flag("--auto-accept", in: &args)
 
-    let server = MyDropServer(device: state.device, identity: state.identity, trust: state.trust,
+    let server = BubbleDropServer(device: state.device, identity: state.identity, trust: state.trust,
                               saveDirectory: dir)
     server.pairHandler = { request in
         print("Pairing request from \(request.sender.name). Code: \(request.code)")
@@ -154,7 +154,7 @@ case "send":
         exit(1)
     }
     let state = try State(directory: stateDir, name: nil)
-    let client = MyDropClient(device: state.device, identity: state.identity, trust: state.trust)
+    let client = BubbleDropClient(device: state.device, identity: state.identity, trust: state.trust)
     do {
         let receiver = try await client.send(files: files, to: endpoint, confirmPairing: { prompt in
             print("Pairing with \(prompt.peerName). Code: \(prompt.code)")

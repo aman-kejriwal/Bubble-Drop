@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.Manifest
 import android.content.Intent
@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -40,6 +41,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.IntentCompat
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -62,16 +65,16 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         handleShareIntent(intent)
         setContent {
-            MyDropTheme {
+            BubbleDropTheme {
                 val permissions = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
-                ) { MyDropService.start(this) }
+                ) { BubbleDropService.start(this) }
                 androidx.compose.runtime.LaunchedEffect(Unit) {
                     val needed = buildList {
                         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
                         if (Build.VERSION.SDK_INT >= 37) add(PERMISSION_LOCAL_NETWORK)
                     }
-                    if (needed.isEmpty()) MyDropService.start(this@MainActivity)
+                    if (needed.isEmpty()) BubbleDropService.start(this@MainActivity)
                     else permissions.launch(needed.toTypedArray())
                 }
                 MainScreen(sharedUris = sharedUris, onClearShared = { sharedUris = emptyList() })
@@ -106,7 +109,7 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
     val context = LocalContext.current
     val peers by Graph.discovery.peers.collectAsState()
     val transfers by Graph.transfers.transfers.collectAsState()
-    val running by MyDropService.running.collectAsState()
+    val running by BubbleDropService.running.collectAsState()
     val pending by Graph.prompts.current.collectAsState()
     val trusted by Graph.trust.devices.collectAsState()
     var pickTarget by remember { mutableStateOf<Peer?>(null) }
@@ -121,7 +124,24 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
         pickTarget = null
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("MyDrop") }) }) { padding ->
+    // Transfers seen in flight while the app is open; only these get the full-screen card.
+    var live by remember { mutableStateOf(emptySet<String>()) }
+    var dismissed by remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(transfers) {
+        live = live + transfers.filter {
+            it.status == Transfer.Status.Waiting || it.status == Transfer.Status.Active
+        }.map { it.id }
+    }
+    val spotlight = transfers.firstOrNull { it.id in live && it.id !in dismissed }
+    LaunchedEffect(spotlight?.id, spotlight?.status == Transfer.Status.Done) {
+        if (spotlight?.status == Transfer.Status.Done) {
+            delay(4_000)
+            dismissed = dismissed + spotlight.id
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+    Scaffold(topBar = { TopAppBar(title = { Text("BubbleDrop") }) }) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(16.dp),
@@ -138,7 +158,7 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
                             )
                         }
                         Switch(checked = running, onCheckedChange = {
-                            if (it) MyDropService.start(context) else MyDropService.stop(context)
+                            if (it) BubbleDropService.start(context) else BubbleDropService.stop(context)
                         })
                     }
                 }
@@ -165,8 +185,8 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(12.dp))
                         Text(
-                            if (running) "Looking for devices… Open MyDrop on your Mac and join the same Wi-Fi."
-                            else "Turn MyDrop on to find devices.",
+                            if (running) "Looking for devices… Open BubbleDrop on your Mac and join the same Wi-Fi."
+                            else "Turn BubbleDrop on to find devices.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -225,7 +245,14 @@ private fun MainScreen(sharedUris: List<Uri>, onClearShared: () -> Unit) {
         }
     }
 
-    pending?.let { prompt -> PromptDialog(prompt) }
+    DropOverlay(
+        offer = pending?.takeIf { it.kind is PromptKind.Offer },
+        transfer = spotlight,
+        onDismissTransfer = { dismissed = dismissed + it.id },
+    )
+    }
+
+    pending?.takeIf { it.kind !is PromptKind.Offer }?.let { prompt -> PromptDialog(prompt) }
 }
 
 @Composable
@@ -243,7 +270,7 @@ private fun PromptDialog(prompt: Prompts.Pending) {
                         ask.files.take(6).forEach { Text("• ${it.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         if (ask.files.size > 6) Text("…and ${ask.files.size - 6} more")
                         Spacer(Modifier.size(8.dp))
-                        Text("${formatBytes(ask.totalSize)} · saved to Downloads/MyDrop",
+                        Text("${formatBytes(ask.totalSize)} · saved to Downloads/BubbleDrop",
                             style = MaterialTheme.typography.bodySmall)
                     }
                 },
@@ -296,7 +323,7 @@ private fun TransferRow(transfer: Transfer) {
                     style = MaterialTheme.typography.bodySmall)
             }
             Transfer.Status.Done -> Text(
-                if (transfer.incoming) "From ${transfer.peerName} · in Downloads/MyDrop" else "Sent to ${transfer.peerName}",
+                if (transfer.incoming) "From ${transfer.peerName} · in Downloads/BubbleDrop" else "Sent to ${transfer.peerName}",
                 style = MaterialTheme.typography.bodySmall,
             )
             is Transfer.Status.Failed -> Text(status.message, color = MaterialTheme.colorScheme.error,
@@ -306,7 +333,7 @@ private fun TransferRow(transfer: Transfer) {
 }
 
 @Composable
-private fun MyDropTheme(content: @Composable () -> Unit) {
+private fun BubbleDropTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val context = LocalContext.current
     val colors = when {

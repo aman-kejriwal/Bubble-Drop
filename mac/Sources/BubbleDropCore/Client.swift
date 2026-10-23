@@ -17,7 +17,7 @@ public struct PairingPrompt: Sendable {
 }
 
 /// Sends files to a peer over mutual TLS: Discover → (Pair) → Ask → Upload each file.
-public final class MyDropClient {
+public final class BubbleDropClient {
     public let device: DeviceInfo
     public let identity: TLSIdentity
     public let trust: TrustStore
@@ -47,11 +47,11 @@ public final class MyDropClient {
                                                        allowErrorStatus: true)
         switch status {
         case 200: break
-        case 401: throw MyDropError.pairingRequired
-        case 403: throw MyDropError.declined
-        case 409: throw MyDropError.busy
-        case 503: throw MyDropError.receivingOff
-        default: throw MyDropError.http(status, Self.errorMessage(askData))
+        case 401: throw BubbleDropError.pairingRequired
+        case 403: throw BubbleDropError.declined
+        case 409: throw BubbleDropError.busy
+        case 503: throw BubbleDropError.receivingOff
+        default: throw BubbleDropError.http(status, Self.errorMessage(askData))
         }
         let sessionId = try JSONDecoder().decode(AskResponse.self, from: askData).sessionId
 
@@ -109,13 +109,13 @@ public final class MyDropClient {
                                                          allowErrorStatus: true)
         switch status {
         case 200: break
-        case 409: throw MyDropError.busy
-        case 503: throw MyDropError.receivingOff
-        default: throw MyDropError.http(status, Self.errorMessage(startData))
+        case 409: throw BubbleDropError.busy
+        case 503: throw BubbleDropError.receivingOff
+        default: throw BubbleDropError.http(status, Self.errorMessage(startData))
         }
         guard let commitment = Data(base64Encoded: try JSONDecoder().decode(PairStartResponse.self,
                                                                             from: startData).commitment) else {
-            throw MyDropError.badMessage("bad commitment")
+            throw BubbleDropError.badMessage("bad commitment")
         }
 
         let clientNonce = PairingMath.nonce()
@@ -126,22 +126,22 @@ public final class MyDropClient {
               PairingMath.commitment(clientFingerprint: identity.fingerprint, serverFingerprint: serverFingerprint,
                                      serverNonce: serverNonce) == commitment else {
             await cancel()
-            throw MyDropError.pairingFailed("Pairing check failed. Someone may be interfering with the connection.")
+            throw BubbleDropError.pairingFailed("Pairing check failed. Someone may be interfering with the connection.")
         }
 
         let code = PairingMath.code(clientFingerprint: identity.fingerprint, serverFingerprint: serverFingerprint,
                                     clientNonce: clientNonce, serverNonce: serverNonce)
         guard await confirm(PairingPrompt(peerName: receiver.name, code: code)) else {
             await cancel()
-            throw MyDropError.pairingFailed("Pairing cancelled.")
+            throw BubbleDropError.pairingFailed("Pairing cancelled.")
         }
         let (confirmStatus, confirmData, _) = try await roundTrip(endpoint, pinned: serverFingerprint,
                                                                   path: "/api/v2/pair/confirm", body: Data(),
                                                                   timeout: 150, allowErrorStatus: true)
         guard confirmStatus == 200 else {
             throw confirmStatus == 403
-                ? MyDropError.pairingFailed("\(receiver.name) didn't confirm the code.")
-                : MyDropError.http(confirmStatus, Self.errorMessage(confirmData))
+                ? BubbleDropError.pairingFailed("\(receiver.name) didn't confirm the code.")
+                : BubbleDropError.http(confirmStatus, Self.errorMessage(confirmData))
         }
         trust.add(fingerprint: serverFingerprint, device: receiver)
     }
@@ -156,7 +156,7 @@ public final class MyDropClient {
     private static func describe(_ url: URL) throws -> Item {
         let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentTypeKey])
         if values.isDirectory == true {
-            throw MyDropError.unsupportedItem("Folders aren't supported yet: \(url.lastPathComponent)")
+            throw BubbleDropError.unsupportedItem("Folders aren't supported yet: \(url.lastPathComponent)")
         }
         let mime = values.contentType?.preferredMIMEType
             ?? UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
@@ -172,7 +172,7 @@ public final class MyDropClient {
 
     private func requestHead(path: String, length: Int64, contentType: String) -> Data {
         var head = "POST \(path) HTTP/1.1\r\n"
-        head += "Host: mydrop\r\n"
+        head += "Host: bubbledrop\r\n"
         head += "Content-Type: \(contentType)\r\n"
         head += "Content-Length: \(length)\r\n"
         head += "Connection: close\r\n\r\n"
@@ -190,7 +190,7 @@ public final class MyDropClient {
                                                                                     pinnedPeer: pinned))
         guard let fingerprint = peerFingerprint(of: wire.conn), pinned == nil || fingerprint == pinned else {
             wire.close()
-            throw MyDropError.pairingFailed("The device presented an unexpected certificate.")
+            throw BubbleDropError.pairingFailed("The device presented an unexpected certificate.")
         }
         return (wire, fingerprint)
     }
@@ -204,7 +204,7 @@ public final class MyDropClient {
                                         contentType: "application/json") + body)
         let (status, data) = try await readResponse(wire)
         if !allowErrorStatus && status != 200 {
-            throw status == 401 ? MyDropError.pairingRequired : MyDropError.http(status, Self.errorMessage(data))
+            throw status == 401 ? BubbleDropError.pairingRequired : BubbleDropError.http(status, Self.errorMessage(data))
         }
         return (status, data, fingerprint)
     }
@@ -221,7 +221,7 @@ public final class MyDropClient {
         var written: Int64 = 0
         while written < size {
             guard let chunk = try handle.read(upToCount: 256 * 1024), !chunk.isEmpty else {
-                throw MyDropError.badMessage("\(file.lastPathComponent) changed while sending")
+                throw BubbleDropError.badMessage("\(file.lastPathComponent) changed while sending")
             }
             let take = chunk.prefix(Int(size - written))
             wire.arm(30)
@@ -231,6 +231,6 @@ public final class MyDropClient {
         }
         wire.arm(60)
         let (status, data) = try await readResponse(wire)
-        guard status == 200 else { throw MyDropError.http(status, Self.errorMessage(data)) }
+        guard status == 200 else { throw BubbleDropError.http(status, Self.errorMessage(data)) }
     }
 }

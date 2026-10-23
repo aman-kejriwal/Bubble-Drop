@@ -1,7 +1,7 @@
 import Foundation
 
-public let myDropProtocolVersion = 2
-public let myDropServiceType = "_mydrop._tcp"
+public let bubbleDropProtocolVersion = 2
+public let bubbleDropServiceType = "_bubbledrop._tcp"
 
 public struct DeviceInfo: Codable, Hashable, Sendable {
     public var id: String
@@ -11,7 +11,7 @@ public struct DeviceInfo: Codable, Hashable, Sendable {
     public var protocolVersion: Int
 
     public init(id: String, name: String, model: String, platform: String = "macos",
-                protocolVersion: Int = myDropProtocolVersion) {
+                protocolVersion: Int = bubbleDropProtocolVersion) {
         self.id = id
         self.name = name
         self.model = model
@@ -21,7 +21,7 @@ public struct DeviceInfo: Codable, Hashable, Sendable {
 
     /// This Mac, with an ID persisted in the given defaults.
     public static func local(defaults: UserDefaults = .standard, name: String? = nil) -> DeviceInfo {
-        let key = "MyDropDeviceID"
+        let key = "BubbleDropDeviceID"
         let id: String
         if let saved = defaults.string(forKey: key) {
             id = saved
@@ -87,7 +87,7 @@ struct ErrorBody: Codable {
 
 struct EmptyBody: Codable {}
 
-public enum MyDropError: LocalizedError {
+public enum BubbleDropError: LocalizedError {
     case connectionClosed
     case timeout
     case badMessage(String)

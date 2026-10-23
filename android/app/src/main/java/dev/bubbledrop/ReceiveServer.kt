@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.content.ContentValues
 import android.content.Context
@@ -19,7 +19,7 @@ import javax.net.ssl.SSLServerSocket
 import javax.net.ssl.SSLSocket
 import kotlin.concurrent.thread
 
-/** Serves the PROTOCOL.md v2 endpoints over mutual TLS and saves files to Downloads/MyDrop. */
+/** Serves the PROTOCOL.md v2 endpoints over mutual TLS and saves files to Downloads/BubbleDrop. */
 class ReceiveServer(
     private val context: Context,
     private val device: DeviceInfo,
@@ -57,7 +57,7 @@ class ReceiveServer(
             .createServerSocket(0) as SSLServerSocket
         server.needClientAuth = true
         socket = server
-        thread(name = "mydrop-accept", isDaemon = true) {
+        thread(name = "bubbledrop-accept", isDaemon = true) {
             while (!server.isClosed) {
                 val client = try { server.accept() as SSLSocket } catch (_: IOException) { break }
                 pool.execute { handle(client) }
@@ -182,7 +182,7 @@ class ReceiveServer(
         sessions[id] = session
         transfers.upsert(
             Transfer(
-                id = id, incoming = true, peerName = request.sender.name,
+                id = id, incoming = true, peerName = request.sender.name, peerPlatform = request.sender.platform,
                 summary = describeNames(request.files.map { it.name }),
                 totalBytes = session.totalBytes, status = Transfer.Status.Active,
             )
@@ -207,7 +207,7 @@ class ReceiveServer(
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, sanitizeFileName(offer.name))
             put(MediaStore.Downloads.MIME_TYPE, offer.mimeType)
-            put(MediaStore.Downloads.RELATIVE_PATH, "Download/MyDrop")
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/BubbleDrop")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
@@ -257,7 +257,7 @@ class ReceiveServer(
     private fun b64(bytes: ByteArray) = Base64.encodeToString(bytes, Base64.NO_WRAP)
 
     companion object {
-        private const val TAG = "MyDropServer"
+        private const val TAG = "BubbleDropServer"
         private const val SESSION_EXPIRY_MS = 10 * 60 * 1000L
         private const val PROMPT_TIMEOUT_MS = 120_000L
         private val PAIRING_REQUIRED get() = 401 to errorJson("pairing required")

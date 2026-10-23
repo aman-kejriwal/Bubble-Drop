@@ -1,9 +1,9 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** Vectors produced by the Swift implementation (mac/Sources/MyDropCore/Security.swift). */
+/** Vectors produced by the Swift implementation (mac/Sources/BubbleDropCore/Security.swift). */
 class PairingMathTest {
     private val client = "aa".repeat(32)
     private val server = "bb".repeat(32)
@@ -13,12 +13,12 @@ class PairingMathTest {
     @Test
     fun commitmentMatchesSwift() {
         val hex = PairingMath.commitment(client, server, serverNonce).joinToString("") { "%02x".format(it) }
-        assertEquals("eabcfddbe7d5dd6d8a56dca24170a66259d6296d06b22e847fd8dbc7f950006c", hex)
+        assertEquals("88ea67776c6f3a81583ab7f797935f1851e8553fb0ae59361d1ff2be64b32fa9", hex)
     }
 
     @Test
     fun codeMatchesSwift() {
-        assertEquals("522975", PairingMath.code(client, server, clientNonce, serverNonce))
+        assertEquals("068199", PairingMath.code(client, server, clientNonce, serverNonce))
     }
 
     @Test

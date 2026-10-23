@@ -1,4 +1,4 @@
-# MyDrop
+# BubbleDrop
 
 AirDrop-style file sharing between Android and Mac (and Mac↔Mac, Android↔Android)
 over the same Wi-Fi network, encrypted with mutual TLS. Protocol: [PROTOCOL.md](PROTOCOL.md).
@@ -11,8 +11,8 @@ Unpair any device from the "Paired devices" list.
 
 ```sh
 cd mac
-./build.sh            # → build/MyDrop.app and build/mydrop-cli
-open build/MyDrop.app # menu-bar icon (paper plane)
+./build.sh            # → build/BubbleDrop.app and build/bubbledrop-cli
+open build/BubbleDrop.app # menu-bar icon (paper plane)
 ```
 
 - Pick a nearby device → **Send…**, or drop files onto its row.
@@ -22,10 +22,10 @@ open build/MyDrop.app # menu-bar icon (paper plane)
 CLI (handy for testing):
 
 ```sh
-build/mydrop-cli serve --auto-accept --dir /tmp/in   # receive (auto-confirms pairing too)
-build/mydrop-cli browse                               # list devices
-build/mydrop-cli send "Pixel 9a" photo.jpg            # by name, or host:port
-build/mydrop-cli paired [--forget FINGERPRINT]        # list / remove paired devices
+build/bubbledrop-cli serve --auto-accept --dir /tmp/in   # receive (auto-confirms pairing too)
+build/bubbledrop-cli browse                               # list devices
+build/bubbledrop-cli send "Pixel 9a" photo.jpg            # by name, or host:port
+build/bubbledrop-cli paired [--forget FINGERPRINT]        # list / remove paired devices
 # --state DIR gives an instance its own identity, e.g. to test two "devices" on one Mac
 ```
 
@@ -40,10 +40,10 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-- Open MyDrop and grant notifications (plus local network on Android 17).
-- Tap a nearby device to pick files, or use **Share → MyDrop** from any app.
+- Open BubbleDrop and grant notifications (plus local network on Android 17).
+- Tap a nearby device to pick files, or use **Share → BubbleDrop** from any app.
 - Incoming offers show a dialog or a heads-up notification with Accept/Decline;
-  files go to `Download/MyDrop`.
+  files go to `Download/BubbleDrop`.
 
 ## Status / next steps
 

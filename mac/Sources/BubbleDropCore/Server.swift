@@ -17,7 +17,7 @@ public struct PairingRequest: Sendable {
 }
 
 /// Receives files: advertises over Bonjour and serves the PROTOCOL.md v2 endpoints over mutual TLS.
-public final class MyDropServer {
+public final class BubbleDropServer {
     public let device: DeviceInfo
     public let identity: TLSIdentity
     public let trust: TrustStore
@@ -64,7 +64,7 @@ public final class MyDropServer {
         if advertise {
             var txt = device.txtRecord
             txt["fp"] = identity.fingerprint
-            listener.service = NWListener.Service(name: device.name, type: myDropServiceType,
+            listener.service = NWListener.Service(name: device.name, type: bubbleDropServiceType,
                                                   domain: nil, txtRecord: NWTXTRecord(txt).data)
         }
         listener.stateUpdateHandler = { [weak self, weak listener] state in
@@ -91,7 +91,7 @@ public final class MyDropServer {
             wire.arm(30)
             let head = try RequestHead(try await wire.readHead())
             guard let client = peerFingerprint(of: wire.conn) else {
-                throw MyDropError.badMessage("no client certificate")
+                throw BubbleDropError.badMessage("no client certificate")
             }
             guard head.method == "POST" else {
                 return try await wire.sendResponse(status: 404, json: ErrorBody(error: "not found"))
@@ -256,7 +256,7 @@ public final class MyDropServer {
 
         let fm = FileManager.default
         try fm.createDirectory(at: saveDirectory, withIntermediateDirectories: true)
-        let partial = saveDirectory.appendingPathComponent(".mydrop-\(UUID().uuidString).partial")
+        let partial = saveDirectory.appendingPathComponent(".bubbledrop-\(UUID().uuidString).partial")
         fm.createFile(atPath: partial.path, contents: nil)
         do {
             let handle = try FileHandle(forWritingTo: partial)

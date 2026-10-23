@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import android.app.NotificationManager
 import android.app.PendingIntent

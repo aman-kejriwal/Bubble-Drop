@@ -1,4 +1,4 @@
-package dev.mydrop
+package dev.bubbledrop
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -6,7 +6,7 @@ import org.json.JSONObject
 // Wire types for PROTOCOL.md v2.
 
 const val PROTOCOL_VERSION = 2
-const val SERVICE_TYPE = "_mydrop._tcp"
+const val SERVICE_TYPE = "_bubbledrop._tcp"
 
 data class DeviceInfo(
     val id: String,
