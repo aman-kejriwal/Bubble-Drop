@@ -106,6 +106,11 @@ struct NonceBody: Codable {
     var nonce: String
 }
 
+/// Response of `/api/v2/pair/wait`: how the receiver's user answered the code.
+struct PairWaitResponse: Codable {
+    var accepted: Bool
+}
+
 struct ErrorBody: Codable {
     var error: String
 }

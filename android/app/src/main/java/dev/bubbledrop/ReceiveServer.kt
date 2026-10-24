@@ -97,6 +97,10 @@ class ReceiveServer(
                     request.readJson()
                     pairConfirm(peer)
                 }
+                "/api/v2/pair/wait" -> {
+                    request.readJson()
+                    pairWait(peer)
+                }
                 "/api/v2/pair/cancel" -> {
                     request.readJson()
                     pairCancel(peer)
@@ -193,6 +197,18 @@ class ReceiveServer(
         if (!confirmed || !stillCurrent) return 403 to errorJson("pairing declined")
         trust.add(client, state.sender)
         return 200 to JSONObject()
+    }
+
+    /**
+     * Held until this phone's user answers the code, so the other device can close its own code
+     * prompt as soon as the user here declines. Unlike confirm, it doesn't vouch for that device's user.
+     */
+    private fun pairWait(client: String): Pair<Int, JSONObject> {
+        val state = synchronized(pairLock) { pairing?.takeIf { it.client == client } }
+        val prompt = state?.prompt ?: return 404 to errorJson("no pairing in progress")
+        val accepted = prompts.await(prompt, PROMPT_TIMEOUT_MS - (System.currentTimeMillis() - state.revealedAt))
+        if (!accepted) synchronized(pairLock) { if (pairing === state) pairing = null }
+        return 200 to JSONObject().put("accepted", accepted)
     }
 
     private fun pairCancel(client: String) {

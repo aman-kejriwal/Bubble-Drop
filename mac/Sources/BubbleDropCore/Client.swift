@@ -19,6 +19,9 @@ public struct PairingPrompt: Sendable {
 /// Sends files to a peer over mutual TLS: Discover → (Pair) → Ask → Upload each file.
 public final class BubbleDropClient {
     public let device: DeviceInfo
+    /// The other device's user declined the code while ours was still deciding: close our code prompt.
+    /// Called off the main thread.
+    public var onPairingDeclined: () -> Void = {}
     public let identity: TLSIdentity
     public let trust: TrustStore
 
@@ -172,7 +175,22 @@ public final class BubbleDropClient {
 
         let code = PairingMath.code(clientFingerprint: identity.fingerprint, serverFingerprint: serverFingerprint,
                                     clientNonce: clientNonce, serverNonce: serverNonce)
+        // Learn the other user's answer while ours is still open, so a decline there closes our prompt.
+        // Devices without /pair/wait answer 404, and pairing then works as before.
+        let declined = Flag()
+        let onDeclined = onPairingDeclined
+        let watch = Task {
+            guard let (status, data, _) = try? await roundTrip(endpoint, pinned: serverFingerprint,
+                                                               path: "/api/v2/pair/wait", body: Data(),
+                                                               timeout: 150, allowErrorStatus: true),
+                  status == 200, let answer = try? JSONDecoder().decode(PairWaitResponse.self, from: data),
+                  !answer.accepted else { return }
+            declined.set()
+            onDeclined()
+        }
         guard await confirm(PairingPrompt(peerName: receiver.name, code: code)) else {
+            watch.cancel()
+            if declined.isSet { throw BubbleDropError.pairingFailed("\(receiver.name) declined pairing.") }
             await cancel()
             throw BubbleDropError.pairingCancelled
         }
@@ -273,5 +291,23 @@ public final class BubbleDropClient {
         wire.arm(60)
         let (status, data) = try await readResponse(wire)
         guard status == 200 else { throw BubbleDropError.http(status, Self.errorMessage(data)) }
+    }
+}
+
+/// A thread-safe one-way switch.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
     }
 }

@@ -127,6 +127,10 @@ public final class BubbleDropServer {
                 _ = try await wire.readBody(length: Int(head.contentLength))
                 wire.arm(180)
                 try await pairConfirm(client, wire)
+            case "/api/v2/pair/wait":
+                _ = try await wire.readBody(length: Int(head.contentLength))
+                wire.arm(180)
+                try await pairWait(client, wire)
             case "/api/v2/pair/cancel":
                 _ = try await wire.readBody(length: Int(head.contentLength))
                 pairCancel(client)
@@ -287,6 +291,23 @@ public final class BubbleDropServer {
         }
         trust.add(fingerprint: client, device: state.sender)
         try await wire.sendResponse(status: 200, json: EmptyBody())
+    }
+
+    /// Held until this Mac's user answers the code, so the other device can close its own code
+    /// prompt as soon as the user here declines. Unlike confirm, it doesn't vouch for that device's user.
+    private func pairWait(_ client: String, _ wire: Wire) async throws {
+        let decision: Task<Bool, Never>? = locked {
+            guard let current = pairing, current.clientFingerprint == client else { return nil }
+            return current.decision
+        }
+        guard let decision else {
+            return try await wire.sendResponse(status: 404, json: ErrorBody(error: "no pairing in progress"))
+        }
+        let accepted = await firstResult(timeout: 120) { await decision.value }
+        if !accepted {
+            locked { if pairing?.clientFingerprint == client { pairing = nil } }
+        }
+        try await wire.sendResponse(status: 200, json: PairWaitResponse(accepted: accepted))
     }
 
     private func pairCancel(_ client: String) {

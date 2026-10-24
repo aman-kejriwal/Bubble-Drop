@@ -5,6 +5,8 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import org.json.JSONObject
+import kotlin.concurrent.thread
+import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -168,10 +170,24 @@ class Sender(
         }
 
         val code = PairingMath.code(identity.fingerprint, fingerprint, clientNonce, serverNonce)
-        val confirmed = prompts.ask(PromptKind.PairOutgoing(receiver.name, code))
-        if (confirmed != true) {
+        val pending = prompts.begin(PromptKind.PairOutgoing(receiver.name, code)).also {
+            if (it == null) cancel()
+        } ?: throw IOException("Another prompt is open.")
+        // Learn the other user's answer while ours is still open, so a decline there closes our prompt.
+        // Devices without /pair/wait answer 404, and pairing then works as before.
+        val declined = AtomicBoolean(false)
+        thread(name = "pair-wait", isDaemon = true) {
+            val answer = runCatching { postJson(peer, fingerprint, "/api/v2/pair/wait", JSONObject(), 150_000) }.getOrNull()
+            if (answer?.status == 200 && !answer.json.optBoolean("accepted", true)) {
+                declined.set(true)
+                prompts.dismiss(pending)
+            }
+        }
+        val confirmed = prompts.await(pending, 120_000)
+        if (!confirmed) {
+            if (declined.get()) throw IOException("${receiver.name} declined pairing.")
             cancel()
-            throw if (confirmed == null) IOException("Another prompt is open.") else PairingCancelledException()
+            throw PairingCancelledException()
         }
         val confirm = postJson(peer, fingerprint, "/api/v2/pair/confirm", JSONObject(), 150_000)
         when (confirm.status) {

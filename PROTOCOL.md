@@ -98,6 +98,7 @@ one pairing at a time.
 | 2 | `POST /api/v2/pair/reveal`  | `{ "nonce": Nc }`          | `200 { "nonce": Ns }`. The server now shows the code |
 | 3 | client checks `commitment`, shows the code, and waits for its user to confirm | | |
 | 4 | `POST /api/v2/pair/confirm` | `{}` | held until the server's user confirms (≤120 s). `200`: paired, `403`: declined |
+| – | `POST /api/v2/pair/wait`    | `{}` | held until the server's user answers (≤120 s): `200 { "accepted": bool }`. Sent alongside step 3 so a decline on the server closes the client's code prompt at once; it doesn't count as the client's confirmation. Older servers answer `404`; ignore it |
 | – | `POST /api/v2/pair/cancel`  | `{}` | `200`; the server dismisses its prompt |
 
 If the commitment check fails, the client cancels and reports possible interference. On

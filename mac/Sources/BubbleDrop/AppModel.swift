@@ -140,7 +140,14 @@ final class AppModel: ObservableObject {
             try server.start()
             self.trust = trust
             self.server = server
-            client = BubbleDropClient(device: device, identity: identity, trust: trust)
+            let client = BubbleDropClient(device: device, identity: identity, trust: trust)
+            // The modal code alert runs its own run loop, so reach it in the modal mode too.
+            client.onPairingDeclined = {
+                RunLoop.main.perform(inModes: [.common, .modalPanel]) {
+                    MainActor.assumeIsolated { AppModel.shared.dismissPairingAlert() }
+                }
+            }
+            self.client = client
         } catch {
             startupError = "BubbleDrop couldn't start: \(error.localizedDescription)"
         }
