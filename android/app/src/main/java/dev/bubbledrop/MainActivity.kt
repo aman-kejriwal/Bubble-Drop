@@ -210,7 +210,10 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     }
 
     fun tapPeer(peer: Peer) {
-        if (sharedLink != null) {
+        // Nothing works with an unpaired device; tapping one pairs it instead.
+        if (trusted.none { it.fingerprint == peer.fingerprint }) {
+            Graph.pairSuggestions.pair(peer)
+        } else if (sharedLink != null) {
             Graph.scope.launch { Graph.sender.sendLink(peer, sharedLink) }
             onClearShared()
         } else if (sharedUris.isNotEmpty()) {
@@ -320,7 +323,9 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                     footer = if (peers.isEmpty()) null else {
                         val anyPaired = nearby.any { p -> trusted.any { it.fingerprint == p.fingerprint } }
                         (if (anyPaired) "Paired devices are listed first. " else "") +
-                            if (sharing) "Tap a device to send." else "Tap a device to choose files to send it."
+                            (if (sharing) "Tap a device to send." else "Tap a device to choose files to send it.") +
+                            if (nearby.any { p -> trusted.none { it.fingerprint == p.fingerprint } })
+                                " Devices must be paired before you can share or mirror." else ""
                     },
                     modifier = Modifier.animateContentSize(spring(stiffness = Spring.StiffnessMediumLow)),
                 ) {
@@ -329,21 +334,25 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                     }
                     nearby.forEachIndexed { i, peer ->
                         val paired = trusted.any { it.fingerprint == peer.fingerprint }
+                        val pairingThis = suggestion?.id == peer.id && suggestionStatus == PairSuggestions.Status.Pairing
                         ListRow(
                             title = peer.name,
-                            subtitle = listOfNotNull("Paired".takeIf { paired }, peer.model.ifBlank { null }).joinToString(" · ").ifBlank { null },
+                            subtitle = if (paired) listOfNotNull("Paired", peer.model.ifBlank { null }).joinToString(" · ")
+                                else if (pairingThis) "Pairing…" else "Not paired",
                             leading = { DeviceAvatar(peer.platform) },
                             titleAccessory = if (paired) ({
                                 Icon(Icons.Rounded.Lock, "Paired", tint = ios.green, modifier = Modifier.size(14.dp))
                             }) else null,
                             trailing = {
                                 when {
+                                    pairingThis -> ActivityIndicator(18.dp)
+                                    !paired -> IosButton("Pair", { Graph.pairSuggestions.pair(peer) }, large = false)
                                     sharing -> IosButton("Send", { tapPeer(peer) }, large = false)
                                     peer.platform == "macos" && mirroringTo == null ->
                                         IosButton("Mirror", { mirror(peer) }, style = ButtonStyle.Tinted, large = false)
                                 }
                             },
-                            chevron = !sharing,
+                            chevron = paired && !sharing,
                             divider = i < nearby.lastIndex,
                             onClick = { tapPeer(peer) },
                         )

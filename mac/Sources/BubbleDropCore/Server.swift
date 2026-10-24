@@ -22,7 +22,10 @@ public final class BubbleDropServer {
     public let identity: TLSIdentity
     public let trust: TrustStore
     public var saveDirectory: URL
-    public var receivingEnabled = true
+    public var receivingEnabled = true {
+        // Turning receiving off also ends a screen already being shown, not just new ones.
+        didSet { if !receivingEnabled { locked { mirrorStream }?.close() } }
+    }
     /// Decide whether to accept an offer from a paired device. Times out after 120 s.
     public var askHandler: (AskRequest) async -> Bool = { _ in false }
     /// Opens a link from a paired device; returns whether it was opened.
@@ -34,6 +37,9 @@ public final class BubbleDropServer {
     /// A paired phone's call rang, connected or ended.
     public var callHandler: (PhoneSource, PhoneCall) async -> Void = { _, _ in }
     private var mirroring = false
+    /// The screen being shown right now and who sends it, so turning receiving off or unpairing can end it.
+    private var mirrorStream: MirrorStream?
+    private var mirrorClient: String?
     /// Show the pairing code and ask the user to confirm it matches. Times out after 120 s.
     public var pairHandler: (PairingRequest) async -> Bool = { _ in false }
     /// The other device abandoned pairing; dismiss any code prompt.
@@ -191,11 +197,29 @@ public final class BubbleDropServer {
         guard began else {
             return try await wire.sendResponse(status: 409, json: ErrorBody(error: "already showing a screen"))
         }
-        defer { locked { mirroring = false } }
+        defer {
+            locked {
+                mirroring = false
+                mirrorStream = nil
+                mirrorClient = nil
+            }
+        }
         var sender = request.sender
         if let known = trust.device(for: client) { sender.name = known.name }
         try await wire.sendResponse(status: 200, json: EmptyBody(), final: false)
-        await mirrorHandler(sender, MirrorStream(wire, controlAvailable: request.control ?? false))
+        let stream = MirrorStream(wire, controlAvailable: request.control ?? false)
+        locked {
+            mirrorStream = stream
+            mirrorClient = client
+        }
+        if !receivingEnabled || !trust.isTrusted(client) { stream.close() }
+        await mirrorHandler(sender, stream)
+    }
+
+    /// Ends the screen being shown if its sender is no longer paired. Call after unpairing.
+    public func endUntrustedMirroring() {
+        let (stream, client) = locked { (mirrorStream, mirrorClient) }
+        if let stream, let client, !trust.isTrusted(client) { stream.close() }
     }
 
     private func sendPairingRequired(_ wire: Wire) async throws {

@@ -60,6 +60,8 @@ class BubbleDropService : Service() {
     }
 
     override fun onDestroy() {
+        // Mirroring runs in its own service and connection; turning BubbleDrop off must end it too.
+        if (MirrorService.active.value != null) MirrorService.stop(this)
         Graph.pairSuggestions.disarm()
         Graph.discovery.stop()
         Graph.server.stop()

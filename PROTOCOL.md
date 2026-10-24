@@ -63,7 +63,12 @@ Body: the sender's `DeviceInfo`. Response `200`:
 the client's certificate.
 
 The client may skip pairing only if `paired` is true **and** it trusts the server's
-fingerprint itself. Otherwise it pairs first.
+fingerprint itself. Otherwise it must pair first. The apps pair only when the user asks to
+(a Pair button, or the suggestion shown after BubbleDrop is turned on); sending, sharing and
+mirroring never start pairing on their own and report the device as unpaired instead.
+
+Trust is re-checked for long-lived sessions too: unpairing, or turning BubbleDrop or receiving
+off, ends a mirror session with that device at once on either side.
 
 ### Pairing
 

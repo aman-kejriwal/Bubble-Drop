@@ -29,8 +29,9 @@ public final class BubbleDropClient {
     }
 
     @discardableResult
+    /// Pairs first only when [confirmPairing] is given; otherwise an unpaired receiver is an error.
     public func send(files: [URL], to endpoint: NWEndpoint,
-                     confirmPairing: @escaping (PairingPrompt) async -> Bool,
+                     confirmPairing: ((PairingPrompt) async -> Bool)?,
                      progress: @escaping (SendStage) -> Void = { _ in }) async throws -> DeviceInfo {
         progress(.connecting)
         let items = try files.map(Self.describe)
@@ -83,7 +84,7 @@ public final class BubbleDropClient {
     /// Returns the receiver and the certificate fingerprint every later request is pinned to.
     /// Opens [link] on the receiver; returns whether it opened right away (rather than as a notification).
     public func send(link: URL, to endpoint: NWEndpoint,
-                     confirmPairing: @escaping (PairingPrompt) async -> Bool,
+                     confirmPairing: ((PairingPrompt) async -> Bool)?,
                      progress: @escaping (SendStage) -> Void = { _ in }) async throws -> Bool {
         progress(.connecting)
         let (_, serverFingerprint) = try await connectPaired(endpoint, confirmPairing: confirmPairing) {
@@ -114,8 +115,10 @@ public final class BubbleDropClient {
         return status
     }
 
+    /// Connects to a device both sides trust. Without [confirmPairing] it never starts pairing:
+    /// an unpaired device is an error, so pairing stays a separate, deliberate step.
     public func connectPaired(_ endpoint: NWEndpoint,
-                              confirmPairing: @escaping (PairingPrompt) async -> Bool,
+                              confirmPairing: ((PairingPrompt) async -> Bool)?,
                               willPair: () -> Void = {}) async throws -> (DeviceInfo, String) {
         let (_, data, fingerprint) = try await roundTrip(endpoint, pinned: nil, path: "/api/v2/discover",
                                                          body: try JSONEncoder().encode(device), timeout: 15)
@@ -123,6 +126,10 @@ public final class BubbleDropClient {
         if discovered.paired && trust.isTrusted(fingerprint) {
             trust.touch(fingerprint)
             return (discovered.device, fingerprint)
+        }
+        guard let confirmPairing else {
+            if trust.isTrusted(fingerprint) { throw BubbleDropError.notTrustedBy(discovered.device.name) }
+            throw BubbleDropError.pairingFailed("Pair with \(discovered.device.name) first.")
         }
         willPair()
         try await pair(endpoint, serverFingerprint: fingerprint, receiver: discovered.device,

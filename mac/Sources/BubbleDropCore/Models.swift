@@ -125,6 +125,8 @@ public enum BubbleDropError: LocalizedError {
     case pairingFailed(String)
     /// The user clicked Cancel on the pairing code.
     case pairingCancelled
+    /// This Mac trusts the device, but the device no longer trusts this Mac (it unpaired).
+    case notTrustedBy(String)
 
     public var errorDescription: String? {
         switch self {
@@ -139,6 +141,7 @@ public enum BubbleDropError: LocalizedError {
         case .pairingRequired: return "This device needs to be paired first."
         case .pairingFailed(let m): return m
         case .pairingCancelled: return "Pairing cancelled."
+        case .notTrustedBy(let name): return "\(name) doesn't trust this Mac anymore. Pair again to share with it."
         }
     }
 }

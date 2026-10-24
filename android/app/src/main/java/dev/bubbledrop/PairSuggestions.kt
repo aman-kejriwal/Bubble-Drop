@@ -13,9 +13,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * Offers to pair with an unpaired device found just after BubbleDrop is turned on. It only ever
- * suggests: the code exchange starts when the user taps Pair, so the numeric comparison stays a
- * deliberate step. One suggestion per turn-on, and "Not now" quiets that device for a week.
+ * Pairing on this phone. Nothing works with an unpaired device (sending and mirroring never pair
+ * on their own), so turning BubbleDrop on asks to pair with each unpaired device nearby, one at a
+ * time. It only asks: the code exchange starts when the user taps Pair, so comparing the codes
+ * stays a deliberate step. "Not now" skips a device until the next turn-on.
  */
 class PairSuggestions(
     private val context: Context,
@@ -30,15 +31,16 @@ class PairSuggestions(
         data class Failed(val message: String) : Status
     }
 
-    private val prefs = context.getSharedPreferences("pairSuggestions", Context.MODE_PRIVATE)
     private val _suggestion = MutableStateFlow<Peer?>(null)
-    /** The device currently suggested, if any. */
+    /** The device currently suggested or being paired, if any. */
     val suggestion: StateFlow<Peer?> = _suggestion
     private val _status = MutableStateFlow<Status>(Status.Idle)
     val status: StateFlow<Status> = _status
 
     /** Suggestions are only made until this time, so only the device that was just turned on asks. */
     @Volatile private var armedUntil = 0L
+    /** Devices whose suggestion was dismissed since BubbleDrop was last turned on. */
+    private val dismissed = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     init {
         scope.launch {
@@ -49,6 +51,7 @@ class PairSuggestions(
     /** BubbleDrop was just turned on: suggest the first unpaired device found in the next while. */
     fun arm() {
         armedUntil = System.currentTimeMillis() + ARM_WINDOW_MS
+        dismissed.clear()
         evaluate(discovery.peers.value)
     }
 
@@ -68,38 +71,42 @@ class PairSuggestions(
             return
         }
         if (System.currentTimeMillis() > armedUntil) return
-        val candidate = peers.firstOrNull { !isPaired(it) && it.fingerprint != null && !isSnoozed(it.fingerprint) }
+        val candidate = peers.firstOrNull { !isPaired(it) && it.fingerprint != null && it.fingerprint !in dismissed }
             ?: return
-        armedUntil = 0
         _status.value = Status.Idle
         _suggestion.value = candidate
         if (!Links.appVisible) notify(candidate)
     }
 
-    /** Starts pairing with the suggested device; the code then shows in the app for comparison. */
-    fun pair() {
-        val peer = _suggestion.value ?: return
+    /** Pairs with [peer] (the suggested device if null); the code then shows in the app for comparison. */
+    fun pair(peer: Peer? = null) {
+        val target = peer ?: _suggestion.value ?: return
         if (_status.value == Status.Pairing) return
         cancelNotification()
+        _suggestion.value = target
         _status.value = Status.Pairing
         scope.launch {
             try {
-                sender.connectPaired(peer)
-                clear()
+                sender.connectPaired(target, allowPairing = true)
+                next()
             } catch (_: PairingCancelledException) {
-                clear()
+                target.fingerprint?.let(dismissed::add)
+                next()
             } catch (e: Exception) {
                 _status.value = Status.Failed(e.message ?: "Pairing failed")
             }
         }
     }
 
-    /** Hides the suggestion and doesn't suggest this device again for a week. */
+    /** Skips the suggested device until BubbleDrop is next turned on, then offers the next one. */
     fun notNow() {
-        _suggestion.value?.fingerprint?.let {
-            prefs.edit().putLong(it, System.currentTimeMillis() + SNOOZE_MS).apply()
-        }
+        _suggestion.value?.fingerprint?.let(dismissed::add)
+        next()
+    }
+
+    private fun next() {
         clear()
+        evaluate(discovery.peers.value)
     }
 
     private fun clear() {
@@ -109,8 +116,6 @@ class PairSuggestions(
     }
 
     private fun isPaired(peer: Peer) = peer.fingerprint?.let(trust::isTrusted) == true
-
-    private fun isSnoozed(fingerprint: String) = prefs.getLong(fingerprint, 0) > System.currentTimeMillis()
 
     private fun notify(peer: Peer) {
         fun open(pair: Boolean) = PendingIntent.getActivity(
@@ -127,7 +132,7 @@ class PairSuggestions(
         val notification = NotificationCompat.Builder(context, CHANNEL_INCOMING)
             .setSmallIcon(R.drawable.ic_tile)
             .setContentTitle("Pair with ${peer.name}?")
-            .setContentText("It's nearby. You'll compare a code on both screens; pairing is only needed once.")
+            .setContentText("It's nearby but not paired, so nothing can be shared with it yet. Pairing is only needed once.")
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(open(pair = false))
             .setAutoCancel(true)
@@ -146,7 +151,6 @@ class PairSuggestions(
         const val EXTRA_PAIR = "dev.bubbledrop.PAIR_SUGGESTED"
         private const val NOTIFICATION_ID = 3
         private const val ARM_WINDOW_MS = 2 * 60_000L
-        private const val SNOOZE_MS = 7 * 24 * 60 * 60_000L
     }
 }
 

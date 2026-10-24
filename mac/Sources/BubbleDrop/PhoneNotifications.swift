@@ -124,7 +124,7 @@ final class PhoneNotifications: NSObject, ObservableObject, UNUserNotificationCe
         }
         let content = UNMutableNotificationContent()
         content.title = "Pair with \(name)?"
-        content.body = "It's nearby. You'll compare a code on both screens; pairing is only needed once."
+        content.body = "It's nearby but not paired, so nothing can be shared with it yet. Pairing is only needed once."
         content.categoryIdentifier = Self.pairSuggestionID
         content.userInfo = ["pairSuggestion": true]
         center.add(UNNotificationRequest(identifier: Self.pairSuggestionID, content: content, trigger: nil))
@@ -161,8 +161,8 @@ final class PhoneNotifications: NSObject, ObservableObject, UNUserNotificationCe
         if info["pairSuggestion"] != nil {
             Task { @MainActor in
                 switch action {
-                case "pair", UNNotificationDefaultActionIdentifier: AppModel.shared.pairSuggested()
-                case "notNow": AppModel.shared.snoozePairSuggestion()
+                case "pair", UNNotificationDefaultActionIdentifier: AppModel.shared.pair()
+                case "notNow": AppModel.shared.dismissPairSuggestion()
                 default: break
                 }
             }

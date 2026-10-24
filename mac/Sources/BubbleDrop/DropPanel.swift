@@ -213,6 +213,9 @@ private struct PeerBubble: View {
                     .font(.caption)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
+                if !model.isPaired(peer) {
+                    Text("Pairs first").font(.caption2).foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
@@ -220,7 +223,7 @@ private struct PeerBubble: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: hovering)
-        .help("Send to \(peer.name)")
+        .help(model.isPaired(peer) ? "Send to \(peer.name)" : "Pair with \(peer.name), then send")
     }
 }
 

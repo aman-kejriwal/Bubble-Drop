@@ -187,7 +187,7 @@ struct PairSuggestionCard: View {
                     Text("Pair with \(peer.name)?").font(.subheadline.weight(.semibold)).lineLimit(1)
                     switch model.pairSuggestionStatus {
                     case .idle:
-                        Text("You'll compare a code on both screens. Only needed once.")
+                        Text("Not paired, so nothing can be shared yet. You'll compare a code on both screens.")
                             .foregroundStyle(.secondary)
                     case .pairing:
                         Text("Connecting…").foregroundStyle(.secondary)
@@ -200,9 +200,9 @@ struct PairSuggestionCard: View {
             }
             if model.pairSuggestionStatus != .pairing {
                 HStack {
-                    Button("Not Now") { model.snoozePairSuggestion() }
+                    Button("Not Now") { model.dismissPairSuggestion() }
                     Spacer()
-                    Button(model.pairSuggestionStatus == .idle ? "Pair" : "Try Again") { model.pairSuggested() }
+                    Button(model.pairSuggestionStatus == .idle ? "Pair" : "Try Again") { model.pair() }
                         .buttonStyle(.borderedProminent)
                 }
                 .controlSize(.small)
@@ -217,6 +217,8 @@ struct PeerRow: View {
     @EnvironmentObject private var model: AppModel
     let peer: Peer
     @State private var isTargeted = false
+
+    private var paired: Bool { model.isPaired(peer) }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -233,14 +235,17 @@ struct PeerRow: View {
                             .help("Paired")
                     }
                 }
-                Text(peer.platform == "android" ? "Android · \(peer.model)" : peer.model)
+                Text(paired ? (peer.platform == "android" ? "Android · \(peer.model)" : peer.model)
+                     : "Not paired · you'll pair before sending")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer()
+            // Sending to an unpaired device pairs first (AppModel.send); nothing goes out unpaired.
             Button("Send…") { model.chooseFiles(for: peer) }
                 .controlSize(.small)
+                .disabled(model.pairSuggestion?.id == peer.id && model.pairSuggestionStatus == .pairing)
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8)
@@ -249,7 +254,8 @@ struct PeerRow: View {
             loadFileURLs(providers) { urls in model.send(urls, to: peer) }
             return true
         }
-        .help("Drop files here to send them to \(peer.name)")
+        .help(paired ? "Drop files here to send them to \(peer.name)"
+              : "Drop files here: you'll pair with \(peer.name) first, then they're sent")
     }
 }
 

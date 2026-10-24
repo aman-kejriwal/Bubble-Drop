@@ -42,7 +42,7 @@ class Sender(
             val response = postJson(peer, pinned, "/api/v2/link", LinkRequest(device, url).toJson(), readTimeoutMs = 30_000)
             when (response.status) {
                 200 -> Unit
-                401 -> throw IOException("${peer.name} no longer trusts this device. Try again to re-pair.")
+                401 -> throw IOException("${peer.name} no longer trusts this device. Unpair it and pair again.")
                 503 -> throw IOException("${peer.name} has receiving turned off.")
                 else -> throw IOException(response.json.optString("error", "Request failed (${response.status})"))
             }
@@ -76,7 +76,7 @@ class Sender(
             val response = postJson(peer, pinned, "/api/v2/ask", ask.toJson(), readTimeoutMs = 150_000)
             when (response.status) {
                 200 -> Unit
-                401 -> throw IOException("${peer.name} no longer trusts this device. Try again to re-pair.")
+                401 -> throw IOException("${peer.name} no longer trusts this device. Unpair it and pair again.")
                 403 -> throw DeclinedException("${peer.name} declined.")
                 409 -> throw IOException("${peer.name} is busy with another request.")
                 503 -> throw IOException("${peer.name} has receiving turned off.")
@@ -120,8 +120,12 @@ class Sender(
             .also { if (it == 200) trust.touch(fingerprint) }
     }
 
-    /** The paired certificate fingerprint of [peer], pairing first if needed. Blocking. */
-    fun connectPaired(peer: Peer): String {
+    /**
+     * The certificate fingerprint of [peer] when both sides trust each other. Blocking. It pairs
+     * only when [allowPairing] is set (the explicit Pair action); sending and mirroring never do,
+     * so nothing works with a device until it's paired.
+     */
+    fun connectPaired(peer: Peer, allowPairing: Boolean = false): String {
         val discover = postJson(peer, null, "/api/v2/discover", device.toJson(), readTimeoutMs = 15_000)
         if (discover.status != 200) throw IOException("Couldn't reach ${peer.name} (${discover.status})")
         val fingerprint = discover.fingerprint
@@ -129,6 +133,12 @@ class Sender(
         if (discover.json.optBoolean("paired") && trust.isTrusted(fingerprint)) {
             trust.touch(fingerprint)
             return fingerprint
+        }
+        if (!allowPairing) {
+            throw IOException(
+                if (trust.isTrusted(fingerprint)) "${receiver.name} doesn't trust this phone anymore. Unpair it and pair again."
+                else "Pair with ${receiver.name} first."
+            )
         }
         pair(peer, fingerprint, receiver)
         return fingerprint

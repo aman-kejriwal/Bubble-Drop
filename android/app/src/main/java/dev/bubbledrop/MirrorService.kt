@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
@@ -48,6 +49,8 @@ class MirrorService : Service() {
     private var socket: SSLSocket? = null
     private var output: OutputStream? = null
     private val writeLock = Any()
+    /** When the packet being written started (elapsed ms), or 0 between writes; see [watchWrites]. */
+    @Volatile private var writeStartedAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -114,7 +117,7 @@ class MirrorService : Service() {
         val status = readResponse(input)
         when (status) {
             200 -> Unit
-            401 -> throw IOException("${peer.name} no longer trusts this device. Send a file to re-pair.")
+            401 -> throw IOException("${peer.name} no longer trusts this device. Unpair it and pair again.")
             409 -> throw IOException("${peer.name} is already showing a screen.")
             503 -> throw IOException("${peer.name} has receiving turned off.")
             else -> throw IOException("${peer.name} refused mirroring ($status)")
@@ -122,6 +125,7 @@ class MirrorService : Service() {
 
         // Input from the Mac arrives on the same connection; it closes it when its window is closed.
         socket.soTimeout = 0
+        watchWrites(peer.name)
         thread(name = "mirror-input") {
             runCatching { readControl(DataInputStream(input)) }
             if (!stopping) Handler(Looper.getMainLooper()).post { shutDown() }
@@ -132,10 +136,21 @@ class MirrorService : Service() {
                 runCatching { writePacket(TYPE_CONTROL_STATE, 0, byteArrayOf(if (on) 1 else 0)) }
             }
         }
+        // Trust is checked when the session starts; unpairing mid-session must end it too,
+        // since the same connection carries the Mac's remote-control input.
+        val trustWatch = Graph.scope.launch {
+            Graph.trust.devices.collect { devices ->
+                if (devices.none { it.fingerprint == pinned }) {
+                    Log.i(TAG, "${peer.name} was unpaired, stopping")
+                    Handler(Looper.getMainLooper()).post { shutDown() }
+                }
+            }
+        }
         try {
             Encoder(projection).run()
         } finally {
             controlUpdates.cancel()
+            trustWatch.cancel()
         }
     }
 
@@ -158,9 +173,32 @@ class MirrorService : Service() {
 
     private fun writePacket(type: Int, ptsUs: Long, payload: ByteArray) = synchronized(writeLock) {
         val output = output ?: throw IOException("not connected")
-        output.write(ByteBuffer.allocate(13).put(type.toByte()).putLong(ptsUs).putInt(payload.size).array())
-        output.write(payload)
-        output.flush()
+        writeStartedAt = SystemClock.elapsedRealtime()
+        try {
+            output.write(ByteBuffer.allocate(13).put(type.toByte()).putLong(ptsUs).putInt(payload.size).array())
+            output.write(payload)
+            output.flush()
+        } finally {
+            writeStartedAt = 0
+        }
+    }
+
+    /**
+     * Ends the session when a write stays stuck, i.e. the Mac went away without closing the
+     * connection (Wi-Fi dropped, Mac asleep). Sockets have no write timeout, and TCP alone can
+     * take minutes to give up while the screen keeps being captured.
+     */
+    private fun watchWrites(peerName: String) = thread(name = "mirror-watchdog", isDaemon = true) {
+        while (!stopping) {
+            Thread.sleep(1_000)
+            val started = writeStartedAt
+            if (started != 0L && SystemClock.elapsedRealtime() - started > STALL_LIMIT_MS && !stopping) {
+                Log.w(TAG, "connection to $peerName stalled, stopping")
+                _error.value = "Lost the connection to $peerName"
+                Handler(Looper.getMainLooper()).post { shutDown() }
+                return@thread
+            }
+        }
     }
 
     /** Reads the status line and headers, then skips the small JSON body. */
@@ -308,6 +346,8 @@ class MirrorService : Service() {
         private const val EXTRA_CODE = "code"
         private const val EXTRA_DATA = "data"
         private const val MAX_EDGE = 1600
+        /** The Mac drops a silent stream after 15 s; give up on a stuck write before that. */
+        private const val STALL_LIMIT_MS = 10_000L
         private const val TYPE_CONFIG = 1
         private const val TYPE_FRAME = 2
         private const val TYPE_END = 3
