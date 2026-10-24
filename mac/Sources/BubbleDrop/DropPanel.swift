@@ -72,11 +72,11 @@ final class DropPanel {
     }
 }
 
-private final class KeyablePanel: NSPanel {
+final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-private struct VisualEffect: NSViewRepresentable {
+struct VisualEffect: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .hudWindow

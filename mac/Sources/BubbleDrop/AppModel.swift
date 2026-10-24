@@ -89,6 +89,9 @@ final class AppModel: ObservableObject {
             server.notificationHandler = { source, event in
                 await PhoneNotifications.shared.handle(event, from: source)
             }
+            server.callHandler = { source, call in
+                await PhoneCalls.shared.handle(call, from: source)
+            }
             server.pairHandler = { request in
                 await MainActor.run {
                     AppModel.shared.confirmPairing(
@@ -185,9 +188,11 @@ final class AppModel: ObservableObject {
     // MARK: Phone notifications
 
     /// Sends [body] to the paired phone with [fingerprint], if it's nearby.
-    func sendToPhone<Body: Encodable & Sendable>(_ body: Body, path: String, fingerprint: String) async {
-        guard let client, let peer = peers.first(where: { $0.fingerprint == fingerprint }) else { return }
-        _ = try? await client.post(body, path: path, to: peer.endpoint, pinned: fingerprint)
+    /// Returns the HTTP status, or nil if the phone couldn't be reached.
+    @discardableResult
+    func sendToPhone<Body: Encodable & Sendable>(_ body: Body, path: String, fingerprint: String) async -> Int? {
+        guard let client, let peer = peers.first(where: { $0.fingerprint == fingerprint }) else { return nil }
+        return try? await client.post(body, path: path, to: peer.endpoint, pinned: fingerprint)
     }
 
     // MARK: Links

@@ -121,12 +121,22 @@ struct ContentView: View {
 /// Switches for what a paired phone may show on this Mac.
 struct FromPhoneSection: View {
     @ObservedObject private var phone = PhoneNotifications.shared
+    @ObservedObject private var calls = PhoneCalls.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("From your phone").font(.subheadline.weight(.semibold))
             Toggle("Notifications", isOn: $phone.showNotifications)
             Toggle("Calls", isOn: $phone.showCalls)
+            Toggle("Speaker on when answering here", isOn: $calls.speakerOnAnswer)
+                .disabled(!phone.showCalls)
+            Picker("Ringtone", selection: $calls.ringtoneName) {
+                Text(PhoneCalls.silentRingtone).tag(PhoneCalls.silentRingtone)
+                Divider()
+                ForEach(PhoneCalls.ringtones, id: \.self) { Text(PhoneCalls.displayName($0)).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .disabled(!phone.showCalls)
             if !phone.knownApps.isEmpty {
                 DisclosureGroup("Apps (\(phone.knownApps.count))") {
                     ScrollView {

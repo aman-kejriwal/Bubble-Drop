@@ -37,14 +37,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -114,7 +115,7 @@ fun DropOverlay(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.55f))
+                .background(Color.Black.copy(alpha = 0.4f))
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
             contentAlignment = Alignment.Center,
         ) {
@@ -125,9 +126,8 @@ fun DropOverlay(
                 exit = scaleOut(targetScale = 0.9f) + fadeOut(),
             ) {
                 Surface(
-                    shape = RoundedCornerShape(32.dp),
+                    shape = RoundedCornerShape(36.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    tonalElevation = 6.dp,
                     shadowElevation = 24.dp,
                     modifier = Modifier.padding(24.dp).widthIn(max = 420.dp).fillMaxWidth(),
                 ) {
@@ -155,25 +155,33 @@ private fun OfferCard(request: AskRequest, respond: (Boolean) -> Unit) {
             style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
-        Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest,
             modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 request.files.take(3).forEach {
-                    Text(it.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Description, null, tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(it.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f))
+                        Text(formatBytes(it.size), style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 if (request.files.size > 3) {
                     Text("and ${request.files.size - 3} more", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(4.dp))
-                Text("${formatBytes(request.totalSize)} · saves to Downloads/BubbleDrop",
+                Text("${formatBytes(request.totalSize)} in total · saves to Downloads/BubbleDrop",
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Spacer(Modifier.height(24.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            FilledTonalButton(onClick = { respond(false) }, modifier = Modifier.weight(1f).height(52.dp)) { Text("Decline") }
-            Button(onClick = { respond(true) }, modifier = Modifier.weight(1f).height(52.dp)) { Text("Accept") }
+            IosButton("Decline", { respond(false) }, Modifier.weight(1f), style = ButtonStyle.Tinted, color = Ios.colors.gray)
+            IosButton("Accept", { respond(true) }, Modifier.weight(1f))
         }
     }
 }
@@ -238,13 +246,12 @@ private fun TransferCard(transfer: Transfer, onClose: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             when {
                 transfer.status == Transfer.Status.Done && transfer.incoming -> {
-                    FilledTonalButton(onClick = onClose, modifier = Modifier.weight(1f).height(52.dp)) { Text("Done") }
-                    Button(onClick = { openReceived(context, transfer); onClose() },
-                        modifier = Modifier.weight(1f).height(52.dp)) { Text("Open") }
+                    IosButton("Done", onClose, Modifier.weight(1f), style = ButtonStyle.Tinted)
+                    IosButton("Open", { openReceived(context, transfer); onClose() }, Modifier.weight(1f))
                 }
                 transfer.status == Transfer.Status.Done || transfer.status is Transfer.Status.Failed ->
-                    Button(onClick = onClose, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Done") }
-                else -> TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Hide") }
+                    IosButton("Done", onClose, Modifier.fillMaxWidth())
+                else -> IosButton("Hide", onClose, Modifier.fillMaxWidth(), style = ButtonStyle.Plain)
             }
         }
     }
@@ -379,7 +386,7 @@ fun DropOrb(platform: String, phase: OrbPhase, modifier: Modifier = Modifier) {
         when (phase) {
             OrbPhase.Done -> Unit
             OrbPhase.Failed -> Text("!", fontSize = 44.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            else -> Text(if (platform == "macos") "💻" else "📱", fontSize = 48.sp)
+            else -> Icon(platformIcon(platform), contentDescription = null, tint = primary, modifier = Modifier.size(52.dp))
         }
     }
 }
@@ -401,7 +408,7 @@ private fun formatEta(seconds: Double): String {
     return if (s < 60) "${s}s" else "${s / 60}m ${s % 60}s"
 }
 
-private fun openReceived(context: Context, transfer: Transfer) {
+internal fun openReceived(context: Context, transfer: Transfer) {
     val uri = transfer.savedUris.singleOrNull()
     val intent = if (uri != null) {
         Intent(Intent.ACTION_VIEW).setDataAndType(uri, context.contentResolver.getType(uri))

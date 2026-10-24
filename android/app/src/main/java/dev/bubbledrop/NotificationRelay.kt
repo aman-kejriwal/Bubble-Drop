@@ -41,12 +41,14 @@ class NotificationRelay : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap?) {
         if (!shouldForward(sbn, rankingMap)) return
+        if (Calls.isPhoneCall(this, sbn)) return Calls.posted(this, sbn)
         val notification = describe(sbn) ?: return
         forward(JSONObject().put("event", "posted").put("notification", notification))
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         if (!shouldForward(sbn, null)) return
+        if (Calls.isPhoneCall(this, sbn)) return Calls.removed(this, sbn)
         forward(JSONObject().put("event", "removed").put("key", sbn.key))
     }
 
@@ -139,9 +141,12 @@ class NotificationRelay : NotificationListenerService() {
         /** Sends happen one at a time, in order, off the listener's thread. */
         private val sendQueue = Executors.newSingleThreadExecutor()
 
-        private fun forward(event: JSONObject) = sendQueue.execute {
+        private fun forward(event: JSONObject) = forward("/api/v2/notify", event)
+
+        /** Posts [body] to every paired Mac nearby, in order with the notifications. */
+        fun forward(path: String, body: JSONObject) = sendQueue.execute {
             Graph.discovery.peers.value.filter { it.platform == "macos" }.forEach { peer ->
-                runCatching { Graph.sender.postToPaired(peer, "/api/v2/notify", event) }
+                runCatching { Graph.sender.postToPaired(peer, path, body) }
                     .onFailure { Log.d(TAG, "couldn't reach ${peer.name}: ${it.message}") }
             }
         }

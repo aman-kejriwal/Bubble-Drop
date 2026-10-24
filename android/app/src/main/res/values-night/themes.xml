@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.BubbleDrop" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/grouped_background</item>
+    </style>
+</resources>

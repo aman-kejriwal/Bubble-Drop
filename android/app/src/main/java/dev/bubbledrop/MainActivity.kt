@@ -2,56 +2,81 @@ package dev.bubbledrop
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Cast
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Mouse
+import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.PriorityHigh
+import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.IntentCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -74,6 +99,10 @@ class MainActivity : ComponentActivity() {
                 androidx.compose.runtime.LaunchedEffect(Unit) {
                     val needed = buildList {
                         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+                        // Lets the Mac's call screen answer and end calls.
+                        if (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
+                            add(Manifest.permission.ANSWER_PHONE_CALLS)
+                        }
                         if (Build.VERSION.SDK_INT >= 37) add(PERMISSION_LOCAL_NETWORK)
                     }
                     if (needed.isEmpty()) BubbleDropService.start(this@MainActivity)
@@ -126,10 +155,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+
 @Composable
 private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared: () -> Unit) {
     val context = LocalContext.current
+    val ios = Ios.colors
     val peers by Graph.discovery.peers.collectAsState()
     val transfers by Graph.transfers.transfers.collectAsState()
     val running by BubbleDropService.running.collectAsState()
@@ -137,6 +167,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     val trusted by Graph.trust.devices.collectAsState()
     var pickTarget by remember { mutableStateOf<Peer?>(null) }
     var mirrorTarget by remember { mutableStateOf<Peer?>(null) }
+    var unpairing by remember { mutableStateOf<TrustedDevice?>(null) }
     val mirroringTo by MirrorService.active.collectAsState()
     val mirrorError by MirrorService.error.collectAsState()
     val controlEnabled by ControlService.enabled.collectAsState()
@@ -170,6 +201,19 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
         pickTarget = null
     }
 
+    fun tapPeer(peer: Peer) {
+        if (sharedLink != null) {
+            Graph.scope.launch { Graph.sender.sendLink(peer, sharedLink) }
+            onClearShared()
+        } else if (sharedUris.isNotEmpty()) {
+            send(peer, sharedUris)
+            onClearShared()
+        } else {
+            pickTarget = peer
+            picker.launch(arrayOf("*/*"))
+        }
+    }
+
     // Transfers seen in flight while the app is open; only these get the full-screen card.
     var live by remember { mutableStateOf(emptySet<String>()) }
     var dismissed by remember { mutableStateOf(emptySet<String>()) }
@@ -186,190 +230,311 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
-    Scaffold(topBar = { TopAppBar(title = { Text("BubbleDrop") }) }) { padding ->
+    val listState = rememberLazyListState()
+    val density = LocalDensity.current
+    // The large title scrolls away and the compact centered title fades into the bar, as in UINavigationBar.
+    val collapsed by remember {
+        derivedStateOf {
+            listState.firstVisibleItemIndex > 0 ||
+                listState.firstVisibleItemScrollOffset > with(density) { 36.dp.toPx() }
+        }
+    }
+    val barAlpha by animateFloatAsState(if (collapsed) 1f else 0f, tween(180), label = "bar")
+    val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val navBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    Box(Modifier.fillMaxSize().background(ios.groupedBackground)) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = statusBar + 44.dp, bottom = navBar + 32.dp),
+            verticalArrangement = Arrangement.spacedBy(28.dp),
         ) {
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(Graph.device.name, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                if (running) "Visible to nearby devices" else "Off: not visible or receiving",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        Switch(checked = running, onCheckedChange = {
-                            if (it) BubbleDropService.start(context) else BubbleDropService.stop(context)
-                        })
-                    }
-                }
+            item(key = "title") {
+                Text("BubbleDrop", style = IosType.largeTitle, color = ios.label,
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 0.dp))
+            }
+
+            if (sharing) {
+                item(key = "share") { ShareBanner(sharedUris.size, sharedLink, onClearShared) }
+            } else {
+                item(key = "hero") { HeroSection(running) }
             }
 
             mirroringTo?.let { name ->
-                item {
-                    Card(Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Mirroring to $name", style = MaterialTheme.typography.titleSmall)
-                                Text("Your screen is visible on $name", style = MaterialTheme.typography.bodySmall)
-                            }
-                            TextButton(onClick = { MirrorService.stop(context) }) { Text("Stop") }
-                        }
-                        Row(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                if (controlEnabled) "$name can control this phone with its mouse and keyboard"
-                                else "To control this phone from $name, turn on \"BubbleDrop remote control\"",
-                                style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
-                            )
-                            if (!controlEnabled) {
-                                TextButton(onClick = { ControlService.openSettings(context) }) { Text("Turn on") }
-                            }
-                        }
+                item(key = "mirroring") {
+                    GroupedSection(header = "Screen Mirroring") {
+                        ListRow(
+                            title = "Mirroring to $name",
+                            subtitle = "Your screen is visible on $name",
+                            leading = { IconTile(Icons.Rounded.Cast, ios.green) },
+                            trailing = {
+                                IosButton("Stop", { MirrorService.stop(context) }, style = ButtonStyle.Tinted,
+                                    color = ios.red, large = false)
+                            },
+                            divider = true,
+                        )
+                        ListRow(
+                            title = "Remote Control",
+                            subtitle = if (controlEnabled) "$name can use its mouse and keyboard here"
+                                else "Turn on \"BubbleDrop remote control\" to control this phone from $name",
+                            leading = { IconTile(Icons.Rounded.Mouse, ios.indigo) },
+                            trailing = {
+                                if (controlEnabled) Badge("On", ios.green)
+                                else IosButton("Turn On", { ControlService.openSettings(context) },
+                                    style = ButtonStyle.Tinted, large = false)
+                            },
+                        )
                     }
                 }
             }
             mirrorError?.let { message ->
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Mirroring stopped: $message", color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { MirrorService.clearError() }) { Text("OK") }
+                item(key = "mirror-error") {
+                    GroupedSection {
+                        ListRow(
+                            title = "Mirroring Stopped",
+                            subtitle = message,
+                            leading = { IconTile(Icons.Rounded.PriorityHigh, ios.red) },
+                            trailing = { TextAction("OK", style = IosType.headline) { MirrorService.clearError() } },
+                        )
+                    }
+                }
+            }
+
+            item(key = "nearby") {
+                GroupedSection(
+                    header = "Nearby Devices",
+                    headerAction = if (running && peers.isNotEmpty()) ({ ActivityIndicator(14.dp) }) else null,
+                    footer = when {
+                        peers.isEmpty() -> null
+                        sharing -> "Tap a device to send."
+                        else -> "Tap a device to choose files to send it."
+                    },
+                    modifier = Modifier.animateContentSize(spring(stiffness = Spring.StiffnessMediumLow)),
+                ) {
+                    if (peers.isEmpty()) {
+                        EmptyNearby(running)
+                    }
+                    peers.forEachIndexed { i, peer ->
+                        val paired = trusted.any { it.fingerprint == peer.fingerprint }
+                        ListRow(
+                            title = peer.name,
+                            subtitle = listOfNotNull("Paired".takeIf { paired }, peer.model.ifBlank { null }).joinToString(" · ").ifBlank { null },
+                            leading = { DeviceAvatar(peer.platform) },
+                            titleAccessory = if (paired) ({
+                                Icon(Icons.Rounded.Lock, "Paired", tint = ios.green, modifier = Modifier.size(14.dp))
+                            }) else null,
+                            trailing = {
+                                when {
+                                    sharing -> IosButton("Send", { tapPeer(peer) }, large = false)
+                                    peer.platform == "macos" && mirroringTo == null ->
+                                        IosButton("Mirror", { mirror(peer) }, style = ButtonStyle.Tinted, large = false)
+                                }
+                            },
+                            chevron = !sharing,
+                            divider = i < peers.lastIndex,
+                            onClick = { tapPeer(peer) },
+                        )
                     }
                 }
             }
 
             if (sharing) {
-                item {
-                    Card(Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    when {
-                                        sharedLink != null -> "Tap a device to open this link there"
-                                        sharedUris.size == 1 -> "Tap a device to send 1 item"
-                                        else -> "Tap a device to send ${sharedUris.size} items"
-                                    }
-                                )
-                                sharedLink?.let {
-                                    Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis)
-                                }
-                            }
-                            TextButton(onClick = onClearShared) { Text("Cancel") }
-                        }
-                    }
-                }
+                item(key = "hero") { HeroSection(running) }
             }
 
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Notifications on your Mac", style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                if (relayEnabled) "Sent to your paired Macs. Choose which ones show in the Mac's BubbleDrop menu."
-                                else "Show this phone's notifications on your paired Mac, and reply from there.",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        TextButton(onClick = { NotificationRelay.openSettings(context) }) {
-                            Text(if (relayEnabled) "Settings" else "Turn on")
-                        }
-                    }
-                }
-            }
-
-            item { Text("Nearby", style = MaterialTheme.typography.titleSmall) }
-            if (peers.isEmpty()) {
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            if (running) "Looking for devices… Open BubbleDrop on your Mac and join the same Wi-Fi."
-                            else "Turn BubbleDrop on to find devices.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            }
-            items(peers, key = { it.id }) { peer ->
-                Card(
-                    Modifier.fillMaxWidth().clickable {
-                        if (sharedLink != null) {
-                            Graph.scope.launch { Graph.sender.sendLink(peer, sharedLink) }
-                            onClearShared()
-                        } else if (sharedUris.isNotEmpty()) {
-                            send(peer, sharedUris)
-                            onClearShared()
-                        } else {
-                            pickTarget = peer
-                            picker.launch(arrayOf("*/*"))
-                        }
-                    }
+            item(key = "mac") {
+                GroupedSection(
+                    header = "On Your Mac",
+                    footer = "Show this phone's notifications on your paired Macs and reply from there. " +
+                        "Remote control lets your Mac drive this phone while you mirror its screen.",
                 ) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (peer.platform == "macos") "💻" else "📱", style = MaterialTheme.typography.headlineSmall)
-                        Spacer(Modifier.width(16.dp))
-                        Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(peer.name, style = MaterialTheme.typography.titleMedium, maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                                if (trusted.any { it.fingerprint == peer.fingerprint }) {
-                                    Text("  🔒 Paired", style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                            Text(peer.model, style = MaterialTheme.typography.bodySmall, maxLines = 1)
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(if (sharing) "Send" else "Choose files",
-                                color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-                            if (!sharing && peer.platform == "macos" && mirroringTo == null) {
-                                TextButton(onClick = { mirror(peer) }, contentPadding = PaddingValues(0.dp)) {
-                                    Text("Mirror screen", style = MaterialTheme.typography.labelLarge)
-                                }
-                            }
-                        }
-                    }
+                    ListRow(
+                        title = "Notifications",
+                        leading = { IconTile(Icons.Rounded.Notifications, ios.red) },
+                        trailing = { Text(if (relayEnabled) "On" else "Off", style = IosType.body, color = ios.secondaryLabel) },
+                        chevron = true,
+                        divider = true,
+                        onClick = { NotificationRelay.openSettings(context) },
+                    )
+                    ListRow(
+                        title = "Remote Control",
+                        leading = { IconTile(Icons.Rounded.Mouse, ios.indigo) },
+                        trailing = { Text(if (controlEnabled) "On" else "Off", style = IosType.body, color = ios.secondaryLabel) },
+                        chevron = true,
+                        onClick = { ControlService.openSettings(context) },
+                    )
                 }
             }
 
             if (trusted.isNotEmpty()) {
-                item { Text("Paired devices", style = MaterialTheme.typography.titleSmall) }
-                items(trusted, key = { it.fingerprint }) { device ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(device.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        TextButton(onClick = { Graph.trust.remove(device.fingerprint) }) { Text("Unpair") }
+                item(key = "paired") {
+                    GroupedSection(
+                        header = "Paired Devices",
+                        footer = "Paired devices are verified with a code once, then connect securely without asking again.",
+                        modifier = Modifier.animateContentSize(),
+                    ) {
+                        trusted.forEachIndexed { i, device ->
+                            ListRow(
+                                title = device.name,
+                                subtitle = "Paired " + DateUtils.getRelativeTimeSpanString(device.pairedAt,
+                                    System.currentTimeMillis(), DateUtils.DAY_IN_MILLIS),
+                                leading = { DeviceAvatar(device.platform, 32.dp) },
+                                trailing = { TextAction("Unpair", color = ios.red, style = IosType.body) { unpairing = device } },
+                                divider = i < trusted.lastIndex,
+                            )
+                        }
                     }
                 }
             }
 
             if (transfers.isNotEmpty()) {
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Transfers", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { Graph.transfers.clearFinished() }) { Text("Clear") }
+                item(key = "transfers") {
+                    GroupedSection(
+                        header = "Transfers",
+                        headerAction = { TextAction("Clear") { Graph.transfers.clearFinished() } },
+                        modifier = Modifier.animateContentSize(),
+                    ) {
+                        transfers.forEachIndexed { i, transfer -> TransferRow(transfer, divider = i < transfers.lastIndex) }
                     }
                 }
-                items(transfers, key = { it.id }) { TransferRow(it) }
             }
         }
+
+        // Navigation bar: transparent over the large title, frosted once content scrolls beneath it.
+        Column(Modifier.fillMaxWidth().graphicsLayer { alpha = barAlpha }) {
+            Box(
+                Modifier.fillMaxWidth().background(ios.groupedBackground.copy(alpha = 0.94f))
+                    .padding(top = statusBar).height(44.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("BubbleDrop", style = IosType.headline, color = ios.label)
+            }
+            Hairline()
+        }
+
+        DropOverlay(
+            offer = pending?.takeIf { it.kind is PromptKind.Offer },
+            transfer = spotlight,
+            onDismissTransfer = { dismissed = dismissed + it.id },
+        )
     }
 
-    DropOverlay(
-        offer = pending?.takeIf { it.kind is PromptKind.Offer },
-        transfer = spotlight,
-        onDismissTransfer = { dismissed = dismissed + it.id },
-    )
+    unpairing?.let { device ->
+        IosAlert(
+            title = "Unpair ${device.name}?",
+            message = "You'll need to confirm a pairing code again the next time you share with it.",
+            onDismiss = { unpairing = null },
+            actions = listOf(
+                AlertAction("Cancel") { unpairing = null },
+                AlertAction("Unpair", bold = true, destructive = true) {
+                    Graph.trust.remove(device.fingerprint)
+                    unpairing = null
+                },
+            ),
+        )
     }
 
     pending?.takeIf { it.kind !is PromptKind.Offer }?.let { prompt -> PromptDialog(prompt) }
+}
+
+/** This phone, AirDrop-style: avatar with a radar pulse while visible, and the visibility switch. */
+@Composable
+private fun HeroSection(running: Boolean) {
+    val context = LocalContext.current
+    val ios = Ios.colors
+    GroupedSection(
+        footer = if (running) "Macs on the same Wi-Fi can see this phone and send it files."
+            else "BubbleDrop is off. This phone won't appear on other devices or receive files.",
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            RadarAvatar(running)
+            Spacer(Modifier.height(10.dp))
+            Text(Graph.device.name, style = IosType.title2, color = ios.label, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp))
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val dot by animateColorAsState(if (running) ios.green else ios.gray, label = "dot")
+                Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
+                Spacer(Modifier.width(6.dp))
+                Text(if (running) "Visible to nearby devices" else "Not visible", style = IosType.subheadline,
+                    color = ios.secondaryLabel)
+            }
+        }
+        Hairline(Modifier.padding(start = 16.dp))
+        ListRow(
+            title = "Discoverable",
+            trailing = {
+                IosSwitch(running) { if (it) BubbleDropService.start(context) else BubbleDropService.stop(context) }
+            },
+            divider = BubbleDropTile.canRequestAdd,
+        )
+        if (BubbleDropTile.canRequestAdd) {
+            ListRow(
+                title = "Add to Quick Settings",
+                titleColor = ios.blue,
+                onClick = { BubbleDropTile.requestAdd(context) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun RadarAvatar(active: Boolean) {
+    val ios = Ios.colors
+    val pulse by rememberInfiniteTransition(label = "radar")
+        .animateFloat(0f, 1f, infiniteRepeatable(tween(2600, easing = LinearEasing)), label = "pulse")
+    val saturation by animateFloatAsState(if (active) 1f else 0f, tween(400), label = "sat")
+    Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
+        if (active) {
+            Canvas(Modifier.fillMaxSize()) {
+                val base = 42.dp.toPx()
+                for (i in 0 until 3) {
+                    val t = (pulse + i / 3f) % 1f
+                    drawCircle(ios.blue.copy(alpha = (1f - t) * 0.28f), radius = base + (size.minDimension / 2 - base) * t)
+                }
+            }
+        }
+        Box(Modifier.graphicsLayer { alpha = 0.45f + 0.55f * saturation }) {
+            DeviceAvatar("android", 84.dp)
+        }
+    }
+}
+
+@Composable
+private fun ShareBanner(count: Int, link: String?, onCancel: () -> Unit) {
+    val ios = Ios.colors
+    GroupedSection(footer = "Choose a nearby device below.") {
+        ListRow(
+            title = if (link != null) "Open Link on a Device" else if (count == 1) "Send 1 Item" else "Send $count Items",
+            subtitle = link ?: "Ready to share with BubbleDrop",
+            leading = { IconTile(if (link != null) Icons.Rounded.Link else Icons.Rounded.Description, ios.blue) },
+            trailing = { TextAction("Cancel", style = IosType.body, onClick = onCancel) },
+        )
+    }
+}
+
+@Composable
+private fun EmptyNearby(running: Boolean) {
+    val ios = Ios.colors
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (running) ActivityIndicator(24.dp)
+        else Icon(Icons.Rounded.WifiOff, null, tint = ios.tertiaryLabel, modifier = Modifier.size(30.dp))
+        Spacer(Modifier.height(12.dp))
+        Text(if (running) "Looking for Devices" else "BubbleDrop Is Off", style = IosType.headline, color = ios.label)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            if (running) "Open BubbleDrop on your Mac and make sure both are on the same Wi-Fi."
+            else "Turn on Discoverable to find nearby devices.",
+            style = IosType.footnote, color = ios.secondaryLabel, textAlign = TextAlign.Center,
+        )
+    }
 }
 
 @Composable
@@ -378,21 +543,11 @@ private fun PromptDialog(prompt: Prompts.Pending) {
     when (val kind = prompt.kind) {
         is PromptKind.Offer -> {
             val ask = kind.request
-            AlertDialog(
-                onDismissRequest = {},
-                title = { Text("${ask.sender.name} wants to send you " +
-                    if (ask.files.size == 1) ask.files[0].name else "${ask.files.size} files") },
-                text = {
-                    Column {
-                        ask.files.take(6).forEach { Text("• ${it.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        if (ask.files.size > 6) Text("…and ${ask.files.size - 6} more")
-                        Spacer(Modifier.size(8.dp))
-                        Text("${formatBytes(ask.totalSize)} · saved to Downloads/BubbleDrop",
-                            style = MaterialTheme.typography.bodySmall)
-                    }
-                },
-                confirmButton = { TextButton(onClick = { respond(true) }) { Text("Accept") } },
-                dismissButton = { TextButton(onClick = { respond(false) }) { Text("Decline") } },
+            IosAlert(
+                title = "${ask.sender.name} wants to send you " +
+                    if (ask.files.size == 1) ask.files[0].name else "${ask.files.size} files",
+                message = "${formatBytes(ask.totalSize)} · saved to Downloads/BubbleDrop",
+                actions = listOf(AlertAction("Decline") { respond(false) }, AlertAction("Accept", bold = true) { respond(true) }),
             )
         }
         is PromptKind.PairIncoming -> PairingDialog(
@@ -410,76 +565,70 @@ private fun PromptDialog(prompt: Prompts.Pending) {
 
 @Composable
 private fun PairingDialog(title: String, detail: String, code: String, respond: (Boolean) -> Unit) {
-    AlertDialog(
-        onDismissRequest = {},
-        title = { Text(title) },
-        text = {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Text(detail, style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.size(16.dp))
-                Text(formatCode(code), style = MaterialTheme.typography.displaySmall)
-            }
-        },
-        confirmButton = { TextButton(onClick = { respond(true) }) { Text("Pair") } },
-        dismissButton = { TextButton(onClick = { respond(false) }) { Text("Cancel") } },
-    )
+    val ios = Ios.colors
+    IosAlert(
+        title = title,
+        message = detail,
+        actions = listOf(AlertAction("Cancel") { respond(false) }, AlertAction("Pair", bold = true) { respond(true) }),
+    ) {
+        Spacer(Modifier.height(16.dp))
+        Text(
+            formatCode(code),
+            style = IosType.largeTitle.copy(fontFamily = FontFamily.Monospace, letterSpacing = 4.sp),
+            color = ios.label,
+            modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(ios.fill.copy(alpha = 0.5f))
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+        )
+    }
 }
 
 @Composable
-private fun TransferRow(transfer: Transfer) {
+private fun TransferRow(transfer: Transfer, divider: Boolean) {
     val context = LocalContext.current
+    val ios = Ios.colors
+    val status = transfer.status
     val link = transfer.link
-    if (link != null) {
-        Column(Modifier.fillMaxWidth().clickable { runCatching { context.startActivity(Links.viewIntent(link)) } }) {
-            Text("🔗 ${transfer.summary}", maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                when (val status = transfer.status) {
-                    is Transfer.Status.Failed -> status.message
-                    Transfer.Status.Done -> when {
-                        transfer.incoming -> "From ${transfer.peerName} · tap to open"
-                        transfer.linkOpened -> "Opened on ${transfer.peerName}"
-                        else -> "Sent to ${transfer.peerName}"
-                    }
-                    else -> "Sending to ${transfer.peerName}…"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = if (transfer.status is Transfer.Status.Failed) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        return
+    val (icon, tint) = when {
+        status is Transfer.Status.Failed -> Icons.Rounded.PriorityHigh to ios.red
+        link != null -> Icons.Rounded.Link to ios.indigo
+        transfer.incoming -> Icons.Rounded.ArrowDownward to ios.green
+        else -> Icons.Rounded.ArrowUpward to ios.blue
     }
-    Column(Modifier.fillMaxWidth()) {
-        Text("${if (transfer.incoming) "↓" else "↑"} ${transfer.summary}", maxLines = 1, overflow = TextOverflow.Ellipsis)
-        when (val status = transfer.status) {
-            Transfer.Status.Waiting -> Text(
-                if (transfer.incoming) "Waiting…" else "Waiting for ${transfer.peerName} to accept…",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Transfer.Status.Active -> {
-                LinearProgressIndicator(progress = { transfer.fraction }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
-                Text("${formatBytes(transfer.doneBytes)} of ${formatBytes(transfer.totalBytes)}",
-                    style = MaterialTheme.typography.bodySmall)
-            }
-            Transfer.Status.Done -> Text(
-                if (transfer.incoming) "From ${transfer.peerName} · in Downloads/BubbleDrop" else "Sent to ${transfer.peerName}",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            is Transfer.Status.Failed -> Text(status.message, color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall)
+    val subtitle = when (status) {
+        is Transfer.Status.Failed -> status.message
+        Transfer.Status.Waiting -> when {
+            link != null -> "Sending to ${transfer.peerName}…"
+            transfer.incoming -> "Waiting…"
+            else -> "Waiting for ${transfer.peerName} to accept…"
+        }
+        Transfer.Status.Active -> "${formatBytes(transfer.doneBytes)} of ${formatBytes(transfer.totalBytes)}"
+        Transfer.Status.Done -> when {
+            link != null && transfer.incoming -> "From ${transfer.peerName}"
+            link != null && transfer.linkOpened -> "Opened on ${transfer.peerName}"
+            link != null -> "Sent to ${transfer.peerName}"
+            transfer.incoming -> "From ${transfer.peerName} · in Downloads/BubbleDrop"
+            else -> "Sent to ${transfer.peerName}"
         }
     }
-}
-
-@Composable
-private fun BubbleDropTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    val context = LocalContext.current
-    val colors = when {
-        Build.VERSION.SDK_INT >= 31 && dark -> dynamicDarkColorScheme(context)
-        Build.VERSION.SDK_INT >= 31 -> dynamicLightColorScheme(context)
-        dark -> darkColorScheme()
-        else -> lightColorScheme()
+    val open: (() -> Unit)? = when {
+        link != null -> ({ runCatching { context.startActivity(Links.viewIntent(link)) } })
+        transfer.incoming && status == Transfer.Status.Done -> ({ openReceived(context, transfer) })
+        else -> null
     }
-    MaterialTheme(colorScheme = colors, content = content)
+    ListRow(
+        title = transfer.summary,
+        subtitle = subtitle,
+        subtitleColor = if (status is Transfer.Status.Failed) ios.red else ios.secondaryLabel,
+        leading = { IconTile(icon, tint) },
+        trailing = if (status == Transfer.Status.Done && link == null) ({
+            Icon(Icons.Rounded.CheckCircle, null, tint = ios.green, modifier = Modifier.size(20.dp))
+        }) else null,
+        chevron = open != null,
+        divider = divider,
+        onClick = open,
+        below = if (status == Transfer.Status.Active) ({
+            IosProgressBar(transfer.fraction, Modifier.padding(top = 6.dp, bottom = 2.dp),
+                color = if (transfer.incoming) ios.green else ios.blue)
+        }) else null,
+    )
 }

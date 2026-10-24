@@ -113,6 +113,14 @@ class ReceiveServer(
                         body.optString("reply").takeIf { body.has("reply") }) == true
                     if (done) 200 to JSONObject() else 404 to errorJson("notification is gone")
                 }
+                "/api/v2/call/action" -> if (!paired) PAIRING_REQUIRED else {
+                    val body = request.readJson()
+                    if (Calls.perform(context, body.getString("action"), body.optBoolean("speaker"))) {
+                        200 to JSONObject()
+                    } else {
+                        404 to errorJson("no call")
+                    }
+                }
                 "/api/v2/notification/dismiss" -> if (!paired) PAIRING_REQUIRED else {
                     NotificationRelay.instance?.dismiss(request.readJson().getString("key"))
                     200 to JSONObject()

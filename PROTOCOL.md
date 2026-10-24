@@ -205,6 +205,28 @@ text input. `200 {}`, or `404` if the notification or action is gone.
 ### `POST /api/v2/notification/dismiss` (Mac → phone)
 `{ "key": "…" }` clears the notification on the phone. `200 {}`.
 
+## Calls
+
+Phone calls from the phone's default phone app don't go through `/notify`; they drive a call
+screen instead. Call audio stays on the phone: Android doesn't let apps capture or inject call
+audio, so the Mac can ask the phone to switch to its speaker. Both endpoints are for paired
+clients only.
+
+### `POST /api/v2/call` (phone → Mac)
+`{ "id": "…", "state": "ringing" | "active" | "ended", "caller": "Mom", "speaker": false }`.
+`id` stays the same for the whole call; `caller` is the contact name or the number; `speaker`
+is whether the phone's speaker is on. Response `200 {}`.
+
+While a call is ringing or active the phone repeats its state every 5 seconds, and it sends
+`ended` up to three times. The Mac treats a call it hasn't heard about for 15 seconds as ended,
+so the call screen closes even if the phone drops off the network mid-call. The phone follows
+one call at a time: `ended` from a phone also clears that phone's call under an older `id`.
+
+### `POST /api/v2/call/action` (Mac → phone)
+`{ "action": "answer" | "decline" | "hangup" | "speaker", "speaker": true }`. For `answer`,
+`speaker: true` switches the phone to speaker once the call connects; for `speaker` it turns the
+speaker on or off. `200 {}`, or `404` if there's no call.
+
 ## Receiver rules
 
 - Use only the last path component of `name`; strip leading dots, `/`, `\`
