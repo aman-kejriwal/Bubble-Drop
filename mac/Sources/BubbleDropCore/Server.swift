@@ -102,6 +102,7 @@ public final class BubbleDropServer {
             guard let client = peerFingerprint(of: wire.conn) else {
                 throw BubbleDropError.badMessage("no client certificate")
             }
+            if trust.isTrusted(client) { trust.touch(client) }
             guard head.method == "POST" else {
                 return try await wire.sendResponse(status: 404, json: ErrorBody(error: "not found"))
             }

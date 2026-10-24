@@ -123,6 +123,8 @@ public enum BubbleDropError: LocalizedError {
     case unsupportedItem(String)
     case pairingRequired
     case pairingFailed(String)
+    /// The user clicked Cancel on the pairing code.
+    case pairingCancelled
 
     public var errorDescription: String? {
         switch self {
@@ -136,6 +138,7 @@ public enum BubbleDropError: LocalizedError {
         case .unsupportedItem(let m): return m
         case .pairingRequired: return "This device needs to be paired first."
         case .pairingFailed(let m): return m
+        case .pairingCancelled: return "Pairing cancelled."
         }
     }
 }

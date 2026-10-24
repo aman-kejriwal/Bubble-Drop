@@ -52,6 +52,10 @@ struct ContentView: View {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
 
+            if let peer = model.pairSuggestion {
+                PairSuggestionCard(peer: peer)
+            }
+
             Divider()
 
             Text("Nearby").font(.subheadline.weight(.semibold))
@@ -91,9 +95,17 @@ struct ContentView: View {
             if !model.trustedDevices.isEmpty {
                 Divider()
                 DisclosureGroup("Paired devices (\(model.trustedDevices.count))") {
-                    ForEach(model.trustedDevices) { device in
+                    ForEach(model.recentDevices) { device in
                         HStack {
-                            Text(device.name).lineLimit(1)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(device.name).lineLimit(1)
+                                if model.isNearby(device) {
+                                    Text("Nearby now").foregroundStyle(.green)
+                                } else {
+                                    Text("Last used \(device.lastActive.formatted(.relative(presentation: .named)))")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                             Spacer()
                             Button("Unpair") { model.unpair(device) }
                                 .buttonStyle(.link)
@@ -157,6 +169,47 @@ struct FromPhoneSection: View {
         .toggleStyle(.switch)
         .controlSize(.small)
         .font(.caption)
+    }
+}
+
+/// "Pair with …?" for an unpaired device found right after BubbleDrop was turned on.
+struct PairSuggestionCard: View {
+    @EnvironmentObject private var model: AppModel
+    let peer: Peer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: peer.platform == "android" ? "iphone.gen3" : "laptopcomputer")
+                    .font(.title2)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Pair with \(peer.name)?").font(.subheadline.weight(.semibold)).lineLimit(1)
+                    switch model.pairSuggestionStatus {
+                    case .idle:
+                        Text("You'll compare a code on both screens. Only needed once.")
+                            .foregroundStyle(.secondary)
+                    case .pairing:
+                        Text("Connecting…").foregroundStyle(.secondary)
+                    case .failed(let message):
+                        Text(message).foregroundStyle(.red).lineLimit(2)
+                    }
+                }
+                .font(.caption)
+                Spacer(minLength: 0)
+            }
+            if model.pairSuggestionStatus != .pairing {
+                HStack {
+                    Button("Not Now") { model.snoozePairSuggestion() }
+                    Spacer()
+                    Button(model.pairSuggestionStatus == .idle ? "Pair" : "Try Again") { model.pairSuggested() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12)))
     }
 }
 

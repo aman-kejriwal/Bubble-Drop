@@ -117,6 +117,7 @@ class Sender(
     fun postToPaired(peer: Peer, path: String, body: JSONObject): Int? {
         val fingerprint = peer.fingerprint?.takeIf(trust::isTrusted) ?: return null
         return postJson(peer, fingerprint, path, body, readTimeoutMs = 10_000).status
+            .also { if (it == 200) trust.touch(fingerprint) }
     }
 
     /** The paired certificate fingerprint of [peer], pairing first if needed. Blocking. */
@@ -125,7 +126,10 @@ class Sender(
         if (discover.status != 200) throw IOException("Couldn't reach ${peer.name} (${discover.status})")
         val fingerprint = discover.fingerprint
         val receiver = DeviceInfo.fromJson(discover.json.getJSONObject("device"))
-        if (discover.json.optBoolean("paired") && trust.isTrusted(fingerprint)) return fingerprint
+        if (discover.json.optBoolean("paired") && trust.isTrusted(fingerprint)) {
+            trust.touch(fingerprint)
+            return fingerprint
+        }
         pair(peer, fingerprint, receiver)
         return fingerprint
     }
@@ -157,7 +161,7 @@ class Sender(
         val confirmed = prompts.ask(PromptKind.PairOutgoing(receiver.name, code))
         if (confirmed != true) {
             cancel()
-            throw IOException(if (confirmed == null) "Another prompt is open." else "Pairing cancelled.")
+            throw if (confirmed == null) IOException("Another prompt is open.") else PairingCancelledException()
         }
         val confirm = postJson(peer, fingerprint, "/api/v2/pair/confirm", JSONObject(), 150_000)
         when (confirm.status) {
@@ -267,3 +271,6 @@ class Sender(
 
     private fun enc(value: String) = URLEncoder.encode(value, "UTF-8")
 }
+
+/** The user tapped Cancel on the pairing code. */
+class PairingCancelledException : IOException("Pairing cancelled.")

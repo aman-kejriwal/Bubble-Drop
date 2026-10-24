@@ -132,6 +132,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleShareIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(PairSuggestions.EXTRA_PAIR, false) == true) {
+            intent.removeExtra(PairSuggestions.EXTRA_PAIR)
+            Graph.pairSuggestions.pair()
+            return
+        }
         val uris = when (intent?.action) {
             Intent.ACTION_SEND -> listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
             Intent.ACTION_SEND_MULTIPLE ->
@@ -165,6 +170,9 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     val running by BubbleDropService.running.collectAsState()
     val pending by Graph.prompts.current.collectAsState()
     val trusted by Graph.trust.devices.collectAsState()
+    val suggestion by Graph.pairSuggestions.suggestion.collectAsState()
+    val suggestionStatus by Graph.pairSuggestions.status.collectAsState()
+    val nearby = remember(peers, trusted) { peers.byPriority(trusted) }
     var pickTarget by remember { mutableStateOf<Peer?>(null) }
     var mirrorTarget by remember { mutableStateOf<Peer?>(null) }
     var unpairing by remember { mutableStateOf<TrustedDevice?>(null) }
@@ -255,6 +263,10 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                     modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 0.dp))
             }
 
+            suggestion?.let { peer ->
+                item(key = "suggestion") { PairSuggestionBanner(peer, suggestionStatus) }
+            }
+
             if (sharing) {
                 item(key = "share") { ShareBanner(sharedUris.size, sharedLink, onClearShared) }
             } else {
@@ -305,17 +317,17 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                 GroupedSection(
                     header = "Nearby Devices",
                     headerAction = if (running && peers.isNotEmpty()) ({ ActivityIndicator(14.dp) }) else null,
-                    footer = when {
-                        peers.isEmpty() -> null
-                        sharing -> "Tap a device to send."
-                        else -> "Tap a device to choose files to send it."
+                    footer = if (peers.isEmpty()) null else {
+                        val anyPaired = nearby.any { p -> trusted.any { it.fingerprint == p.fingerprint } }
+                        (if (anyPaired) "Paired devices are listed first. " else "") +
+                            if (sharing) "Tap a device to send." else "Tap a device to choose files to send it."
                     },
                     modifier = Modifier.animateContentSize(spring(stiffness = Spring.StiffnessMediumLow)),
                 ) {
                     if (peers.isEmpty()) {
                         EmptyNearby(running)
                     }
-                    peers.forEachIndexed { i, peer ->
+                    nearby.forEachIndexed { i, peer ->
                         val paired = trusted.any { it.fingerprint == peer.fingerprint }
                         ListRow(
                             title = peer.name,
@@ -332,7 +344,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                                 }
                             },
                             chevron = !sharing,
-                            divider = i < peers.lastIndex,
+                            divider = i < nearby.lastIndex,
                             onClick = { tapPeer(peer) },
                         )
                     }
@@ -374,14 +386,18 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                         footer = "Paired devices are verified with a code once, then connect securely without asking again.",
                         modifier = Modifier.animateContentSize(),
                     ) {
-                        trusted.forEachIndexed { i, device ->
+                        val recent = trusted.sortedByDescending { it.lastUsed }
+                        recent.forEachIndexed { i, device ->
+                            val here = peers.any { it.fingerprint == device.fingerprint }
                             ListRow(
                                 title = device.name,
-                                subtitle = "Paired " + DateUtils.getRelativeTimeSpanString(device.pairedAt,
-                                    System.currentTimeMillis(), DateUtils.DAY_IN_MILLIS),
+                                subtitle = if (here) "Nearby now" else "Last used " +
+                                    DateUtils.getRelativeTimeSpanString(device.lastUsed, System.currentTimeMillis(),
+                                        DateUtils.MINUTE_IN_MILLIS).toString().replaceFirstChar { it.lowercase() },
+                                subtitleColor = if (here) ios.green else ios.secondaryLabel,
                                 leading = { DeviceAvatar(device.platform, 32.dp) },
                                 trailing = { TextAction("Unpair", color = ios.red, style = IosType.body) { unpairing = device } },
-                                divider = i < trusted.lastIndex,
+                                divider = i < recent.lastIndex,
                             )
                         }
                     }
@@ -436,6 +452,36 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     }
 
     pending?.takeIf { it.kind !is PromptKind.Offer }?.let { prompt -> PromptDialog(prompt) }
+}
+
+/** "Pair with …?" for an unpaired device found right after BubbleDrop was turned on. */
+@Composable
+private fun PairSuggestionBanner(peer: Peer, status: PairSuggestions.Status) {
+    val ios = Ios.colors
+    GroupedSection(
+        header = "New Device Nearby",
+        footer = "You'll compare a 6-digit code on both screens. Pairing is only needed once.",
+    ) {
+        ListRow(
+            title = "Pair with ${peer.name}?",
+            subtitle = when (status) {
+                PairSuggestions.Status.Pairing -> "Connecting…"
+                is PairSuggestions.Status.Failed -> status.message
+                PairSuggestions.Status.Idle -> peer.model.ifBlank { null } ?: "Not paired yet"
+            },
+            subtitleColor = if (status is PairSuggestions.Status.Failed) ios.red else ios.secondaryLabel,
+            leading = { DeviceAvatar(peer.platform) },
+            trailing = if (status == PairSuggestions.Status.Pairing) ({ ActivityIndicator(18.dp) }) else null,
+            below = if (status == PairSuggestions.Status.Pairing) null else ({
+                Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    IosButton("Not Now", { Graph.pairSuggestions.notNow() }, Modifier.weight(1f),
+                        style = ButtonStyle.Tinted, color = ios.gray, large = false)
+                    IosButton(if (status is PairSuggestions.Status.Failed) "Try Again" else "Pair",
+                        { Graph.pairSuggestions.pair() }, Modifier.weight(1f), large = false)
+                }
+            }),
+        )
+    }
 }
 
 /** This phone, AirDrop-style: avatar with a radar pulse while visible, and the visibility switch. */
@@ -552,12 +598,12 @@ private fun PromptDialog(prompt: Prompts.Pending) {
         }
         is PromptKind.PairIncoming -> PairingDialog(
             title = "Pair with ${kind.sender.name}?",
-            detail = "Check that ${kind.sender.name} shows this code, then tap Pair.",
+            detail = "Only tap Pair if ${kind.sender.name} shows this same code.",
             code = kind.code, respond = respond,
         )
         is PromptKind.PairOutgoing -> PairingDialog(
             title = "Pair with ${kind.peerName}?",
-            detail = "Check that ${kind.peerName} shows the same code. You only need to pair once.",
+            detail = "Only tap Pair if ${kind.peerName} shows this same code. You only need to pair once.",
             code = kind.code, respond = respond,
         )
     }

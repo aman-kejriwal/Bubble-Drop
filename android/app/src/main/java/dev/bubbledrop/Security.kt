@@ -146,6 +146,8 @@ data class TrustedDevice(
     val name: String,
     val platform: String,
     val pairedAt: Long,
+    /** When the two devices last talked; paired devices are listed most recently used first. */
+    val lastUsed: Long = pairedAt,
 )
 
 /** Paired devices, keyed by certificate fingerprint. */
@@ -168,10 +170,19 @@ class TrustStore(context: Context) {
     @Synchronized
     fun remove(fingerprint: String) = save(_devices.value.filterNot { it.fingerprint == fingerprint })
 
+    /** Records that [fingerprint] was just used. Written at most once a minute per device. */
+    @Synchronized
+    fun touch(fingerprint: String) {
+        val now = System.currentTimeMillis()
+        val device = device(fingerprint) ?: return
+        if (now - device.lastUsed < TOUCH_INTERVAL_MS) return
+        save(_devices.value.map { if (it.fingerprint == fingerprint) it.copy(lastUsed = now) else it })
+    }
+
     private fun save(devices: List<TrustedDevice>) {
         val json = JSONArray(devices.map {
             JSONObject().put("fingerprint", it.fingerprint).put("deviceId", it.deviceId).put("name", it.name)
-                .put("platform", it.platform).put("pairedAt", it.pairedAt)
+                .put("platform", it.platform).put("pairedAt", it.pairedAt).put("lastUsed", it.lastUsed)
         })
         prefs.edit().putString("devices", json.toString()).apply()
         _devices.value = devices
@@ -181,8 +192,19 @@ class TrustStore(context: Context) {
         val json = JSONArray(prefs.getString("devices", "[]"))
         return (0 until json.length()).map { i ->
             val o = json.getJSONObject(i)
+            val pairedAt = o.optLong("pairedAt")
             TrustedDevice(o.getString("fingerprint"), o.getString("deviceId"), o.getString("name"),
-                o.optString("platform"), o.optLong("pairedAt"))
+                o.optString("platform"), pairedAt, o.optLong("lastUsed", pairedAt))
         }
     }
+
+    private companion object {
+        const val TOUCH_INTERVAL_MS = 60_000L
+    }
+}
+
+/** Paired devices first, most recently used at the top; then the rest by name. */
+fun List<Peer>.byPriority(trusted: List<TrustedDevice>): List<Peer> {
+    val lastUsed = trusted.associate { it.fingerprint to it.lastUsed }
+    return sortedWith(compareByDescending<Peer> { lastUsed[it.fingerprint] ?: -1L }.thenBy { it.name.lowercase() })
 }

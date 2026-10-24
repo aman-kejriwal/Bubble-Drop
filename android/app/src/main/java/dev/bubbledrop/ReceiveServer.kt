@@ -85,6 +85,7 @@ class ReceiveServer(
         try {
             val request = HttpRequest.read(input)
             val paired = trust.isTrusted(peer)
+            if (paired) trust.touch(peer)
             val (status, body) = if (request.method != "POST") 404 to errorJson("not found") else when (request.path) {
                 "/api/v2/discover" -> {
                     request.readJson()

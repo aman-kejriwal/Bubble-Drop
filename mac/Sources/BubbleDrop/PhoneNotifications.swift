@@ -108,6 +108,33 @@ final class PhoneNotifications: NSObject, ObservableObject, UNUserNotificationCe
         return id
     }
 
+    // MARK: Pair suggestions
+
+    private static let pairSuggestionID = "pair-suggestion"
+
+    /// "Pair with …?" with Pair / Not now buttons, for a device found right after turning BubbleDrop on.
+    func showPairSuggestion(name: String) {
+        if categories[Self.pairSuggestionID] == nil {
+            categories[Self.pairSuggestionID] = UNNotificationCategory(
+                identifier: Self.pairSuggestionID,
+                actions: [UNNotificationAction(identifier: "pair", title: "Pair", options: []),
+                          UNNotificationAction(identifier: "notNow", title: "Not Now", options: [])],
+                intentIdentifiers: [], options: [])
+            center.setNotificationCategories(Set(categories.values))
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "Pair with \(name)?"
+        content.body = "It's nearby. You'll compare a code on both screens; pairing is only needed once."
+        content.categoryIdentifier = Self.pairSuggestionID
+        content.userInfo = ["pairSuggestion": true]
+        center.add(UNNotificationRequest(identifier: Self.pairSuggestionID, content: content, trigger: nil))
+    }
+
+    func removePairSuggestion() {
+        center.removeDeliveredNotifications(withIdentifiers: [Self.pairSuggestionID])
+        center.removePendingNotificationRequests(withIdentifiers: [Self.pairSuggestionID])
+    }
+
     /// The app's icon, shown as the notification's thumbnail.
     private func iconAttachment(_ notification: PhoneNotification) -> UNNotificationAttachment? {
         guard let base64 = notification.icon, let png = Data(base64Encoded: base64) else { return nil }
@@ -131,6 +158,16 @@ final class PhoneNotifications: NSObject, ObservableObject, UNUserNotificationCe
         let action = response.actionIdentifier
         let reply = (response as? UNTextInputNotificationResponse)?.userText
         completionHandler()
+        if info["pairSuggestion"] != nil {
+            Task { @MainActor in
+                switch action {
+                case "pair", UNNotificationDefaultActionIdentifier: AppModel.shared.pairSuggested()
+                case "notNow": AppModel.shared.snoozePairSuggestion()
+                default: break
+                }
+            }
+            return
+        }
         guard let fingerprint = info["fingerprint"] as? String, let key = info["key"] as? String else { return }
         Task { @MainActor in
             if action.hasPrefix("action:"), let index = Int(action.dropFirst("action:".count)) {

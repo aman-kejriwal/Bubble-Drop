@@ -47,6 +47,7 @@ class BubbleDropService : Service() {
             Graph.discovery.register(port)
             Graph.discovery.startBrowsing()
             _running.value = true
+            Graph.pairSuggestions.arm()
         } catch (e: Exception) {
             Log.e("BubbleDropService", "start failed", e)
             stopSelf()
@@ -59,6 +60,7 @@ class BubbleDropService : Service() {
     }
 
     override fun onDestroy() {
+        Graph.pairSuggestions.disarm()
         Graph.discovery.stop()
         Graph.server.stop()
         multicastLock?.release()

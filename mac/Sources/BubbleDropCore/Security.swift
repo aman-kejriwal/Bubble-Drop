@@ -155,8 +155,12 @@ public struct TrustedDevice: Codable, Hashable, Identifiable, Sendable {
     public var name: String
     public var platform: String
     public var pairedAt: Date
+    /// When the two devices last talked. Optional so files saved before it existed still load.
+    public var lastUsed: Date?
 
     public var id: String { fingerprint }
+    /// When this device was last used, or paired if it hasn't been used since.
+    public var lastActive: Date { lastUsed ?? pairedAt }
 }
 
 /// Paired devices, keyed by certificate fingerprint and persisted as JSON.
@@ -197,6 +201,15 @@ public final class TrustStore: @unchecked Sendable {
 
     public func remove(fingerprint: String) {
         mutate { $0.removeAll { $0.fingerprint == fingerprint } }
+    }
+
+    /// Records that `fingerprint` was just used. Written at most once a minute per device.
+    public func touch(_ fingerprint: String) {
+        let now = Date()
+        guard let device = device(for: fingerprint), now.timeIntervalSince(device.lastActive) >= 60 else { return }
+        mutate { devices in
+            if let i = devices.firstIndex(where: { $0.fingerprint == fingerprint }) { devices[i].lastUsed = now }
+        }
     }
 
     private func mutate(_ change: (inout [TrustedDevice]) -> Void) {

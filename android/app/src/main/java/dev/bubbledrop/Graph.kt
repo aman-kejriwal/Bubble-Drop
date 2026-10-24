@@ -34,6 +34,8 @@ object Graph {
         private set
     lateinit var sender: Sender
         private set
+    lateinit var pairSuggestions: PairSuggestions
+        private set
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun init(context: Context) {
@@ -46,6 +48,7 @@ object Graph {
         server = ReceiveServer(context, device, identity, trust, prompts, transfers)
         discovery = Discovery(context, device, identity.fingerprint)
         sender = Sender(context, device, identity, trust, prompts, transfers)
+        pairSuggestions = PairSuggestions(context, scope, discovery, trust, sender)
     }
 
     private fun deviceId(context: Context): String {

@@ -35,11 +35,25 @@ struct Transfer: Identifiable {
 final class AppModel: ObservableObject {
     static let shared = AppModel()
 
+    /// Nearby devices, paired ones first (most recently used at the top), then the rest by name.
     @Published private(set) var peers: [Peer] = []
     @Published private(set) var transfers: [Transfer] = []
     @Published var receivingEnabled = true {
-        didSet { server?.receivingEnabled = receivingEnabled }
+        didSet {
+            server?.receivingEnabled = receivingEnabled
+            if receivingEnabled { armPairSuggestion() } else { withdrawPairSuggestion() }
+        }
     }
+
+    enum SuggestionStatus: Equatable {
+        case idle
+        case pairing
+        case failed(String)
+    }
+
+    /// An unpaired device found right after BubbleDrop was turned on, offered for pairing.
+    @Published private(set) var pairSuggestion: Peer?
+    @Published private(set) var pairSuggestionStatus = SuggestionStatus.idle
 
     @Published private(set) var trustedDevices: [TrustedDevice] = []
     @Published private(set) var startupError: String?
@@ -63,18 +77,33 @@ final class AppModel: ObservableObject {
     private var trust: TrustStore?
     private let browser: PeerBrowser
     private var pairingAlertOpen = false
+    private var discoveredPeers: [Peer] = []
+    /// Suggestions are only made until then, so only the device that was just turned on asks.
+    private var suggestUntil = Date.distantPast
+    private static let suggestWindow: TimeInterval = 120
+    private static let snoozeKey = "pairSuggestionSnoozes"
+    private static let snoozeDuration: TimeInterval = 7 * 24 * 3600
 
     private init() {
         browser = PeerBrowser(selfId: device.id)
     }
 
     func start() {
-        browser.onChange = { [weak self] peers in self?.peers = peers }
+        browser.onChange = { [weak self] peers in
+            self?.discoveredPeers = peers
+            self?.refreshPeers()
+        }
+        armPairSuggestion()
         browser.start()
         do {
             let identity = try TLSIdentity.loadOrCreate(directory: stateDirectory)
             let trust = TrustStore(file: stateDirectory.appendingPathComponent("trusted.json"))
-            trust.onChange = { Task { @MainActor in AppModel.shared.trustedDevices = trust.all } }
+            trust.onChange = {
+                Task { @MainActor in
+                    AppModel.shared.trustedDevices = trust.all
+                    AppModel.shared.refreshPeers()
+                }
+            }
             trustedDevices = trust.all
             let server = BubbleDropServer(device: device, identity: identity, trust: trust, saveDirectory: saveDirectory)
             server.askHandler = { request in
@@ -96,7 +125,7 @@ final class AppModel: ObservableObject {
                 await MainActor.run {
                     AppModel.shared.confirmPairing(
                         title: "Pair with \(request.sender.name)?",
-                        detail: "Check that \(request.sender.name) shows this code, then click Pair.", code: request.code)
+                        detail: "Only click Pair if \(request.sender.name) shows this same code.", code: request.code)
                 }
             }
             server.onPairingCancelled = {
@@ -123,6 +152,94 @@ final class AppModel: ObservableObject {
 
     func unpair(_ device: TrustedDevice) {
         trust?.remove(fingerprint: device.fingerprint)
+    }
+
+    /// Paired devices, most recently used first.
+    var recentDevices: [TrustedDevice] { trustedDevices.sorted { $0.lastActive > $1.lastActive } }
+
+    func isNearby(_ device: TrustedDevice) -> Bool { peers.contains { $0.fingerprint == device.fingerprint } }
+
+    private func refreshPeers() {
+        let lastUsed = Dictionary(trustedDevices.map { ($0.fingerprint, $0.lastActive) }, uniquingKeysWith: max)
+        peers = discoveredPeers.sorted { a, b in
+            let ua = a.fingerprint.flatMap { lastUsed[$0] }, ub = b.fingerprint.flatMap { lastUsed[$0] }
+            if ua != ub { return (ua ?? .distantPast) > (ub ?? .distantPast) }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+        evaluatePairSuggestion()
+    }
+
+    // MARK: Pair suggestions
+
+    // Only ever a suggestion: the code exchange starts when the user clicks Pair, so comparing the
+    // codes stays a deliberate step. One suggestion per turn-on; "Not now" quiets a device for a week.
+
+    private func armPairSuggestion() {
+        suggestUntil = Date().addingTimeInterval(Self.suggestWindow)
+        evaluatePairSuggestion()
+    }
+
+    private func evaluatePairSuggestion() {
+        if let current = pairSuggestion {
+            // Withdraw it once the device leaves or gets paired (from either side).
+            let gone = !peers.contains { $0.id == current.id }
+            if (gone || isPaired(current)) && pairSuggestionStatus != .pairing { withdrawPairSuggestion() }
+            return
+        }
+        guard Date() < suggestUntil, server != nil, receivingEnabled else { return }
+        guard let candidate = peers.first(where: { peer in
+            guard let fingerprint = peer.fingerprint else { return false }
+            return !isPaired(peer) && !isSnoozed(fingerprint)
+        }) else { return }
+        suggestUntil = .distantPast
+        pairSuggestionStatus = .idle
+        pairSuggestion = candidate
+        PhoneNotifications.shared.showPairSuggestion(name: candidate.name)
+    }
+
+    func pairSuggested() {
+        guard let peer = pairSuggestion, let client, pairSuggestionStatus != .pairing else { return }
+        PhoneNotifications.shared.removePairSuggestion()
+        pairSuggestionStatus = .pairing
+        Task {
+            do {
+                _ = try await client.connectPaired(peer.endpoint, confirmPairing: { prompt in
+                    await MainActor.run {
+                        AppModel.shared.confirmPairing(
+                            title: "Pair with \(prompt.peerName)?",
+                            detail: "Only click Pair if \(prompt.peerName) shows this same code. Pairing is only needed once.",
+                            code: prompt.code)
+                    }
+                })
+                withdrawPairSuggestion()
+            } catch BubbleDropError.pairingCancelled {
+                withdrawPairSuggestion()
+            } catch {
+                pairSuggestionStatus = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Hides the suggestion and doesn't suggest this device again for a week.
+    func snoozePairSuggestion() {
+        if let fingerprint = pairSuggestion?.fingerprint {
+            var snoozes = UserDefaults.standard.dictionary(forKey: Self.snoozeKey) as? [String: Date] ?? [:]
+            snoozes = snoozes.filter { $0.value > Date() }
+            snoozes[fingerprint] = Date().addingTimeInterval(Self.snoozeDuration)
+            UserDefaults.standard.set(snoozes, forKey: Self.snoozeKey)
+        }
+        withdrawPairSuggestion()
+    }
+
+    private func withdrawPairSuggestion() {
+        pairSuggestion = nil
+        pairSuggestionStatus = .idle
+        PhoneNotifications.shared.removePairSuggestion()
+    }
+
+    private func isSnoozed(_ fingerprint: String) -> Bool {
+        let snoozes = UserDefaults.standard.dictionary(forKey: Self.snoozeKey) as? [String: Date] ?? [:]
+        return (snoozes[fingerprint] ?? .distantPast) > Date()
     }
 
     // MARK: Pairing
@@ -225,7 +342,7 @@ final class AppModel: ObservableObject {
                     await MainActor.run {
                         AppModel.shared.confirmPairing(
                             title: "Pair with \(prompt.peerName)?",
-                            detail: "Check that \(prompt.peerName) shows the same code. Pairing is only needed once.",
+                            detail: "Only click Pair if \(prompt.peerName) shows this same code. Pairing is only needed once.",
                             code: prompt.code)
                     }
                 })
@@ -331,7 +448,7 @@ final class AppModel: ObservableObject {
                     await MainActor.run {
                         AppModel.shared.confirmPairing(
                             title: "Pair with \(prompt.peerName)?",
-                            detail: "Check that \(prompt.peerName) shows the same code. Pairing is only needed once.", code: prompt.code)
+                            detail: "Only click Pair if \(prompt.peerName) shows this same code. Pairing is only needed once.", code: prompt.code)
                     }
                 }) { stage in
                     Task { @MainActor in

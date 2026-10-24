@@ -110,6 +110,7 @@ public final class BubbleDropClient {
         let (status, _, _) = try await roundTrip(endpoint, pinned: pinned, path: path,
                                                  body: try JSONEncoder().encode(body), timeout: 15,
                                                  allowErrorStatus: true)
+        if status == 200 { trust.touch(pinned) }
         return status
     }
 
@@ -120,6 +121,7 @@ public final class BubbleDropClient {
                                                          body: try JSONEncoder().encode(device), timeout: 15)
         let discovered = try JSONDecoder().decode(DiscoverResponse.self, from: data)
         if discovered.paired && trust.isTrusted(fingerprint) {
+            trust.touch(fingerprint)
             return (discovered.device, fingerprint)
         }
         willPair()
@@ -165,7 +167,7 @@ public final class BubbleDropClient {
                                     clientNonce: clientNonce, serverNonce: serverNonce)
         guard await confirm(PairingPrompt(peerName: receiver.name, code: code)) else {
             await cancel()
-            throw BubbleDropError.pairingFailed("Pairing cancelled.")
+            throw BubbleDropError.pairingCancelled
         }
         let (confirmStatus, confirmData, _) = try await roundTrip(endpoint, pinned: serverFingerprint,
                                                                   path: "/api/v2/pair/confirm", body: Data(),
