@@ -42,6 +42,7 @@ final class AppModel: ObservableObject {
         didSet {
             server?.receivingEnabled = receivingEnabled
             if receivingEnabled { armPairSuggestion() } else { withdrawPairSuggestion() }
+            PhoneDashboard.shared.refresh()
         }
     }
 
@@ -98,6 +99,8 @@ final class AppModel: ObservableObject {
         do {
             let identity = try TLSIdentity.loadOrCreate(directory: stateDirectory)
             let trust = TrustStore(file: stateDirectory.appendingPathComponent("trusted.json"))
+            // A pairing with this Mac's own certificate is never valid; drop any left from before.
+            if trust.isTrusted(identity.fingerprint) { trust.remove(fingerprint: identity.fingerprint) }
             trust.onChange = {
                 Task { @MainActor in
                     AppModel.shared.trustedDevices = trust.all
@@ -121,6 +124,9 @@ final class AppModel: ObservableObject {
             }
             server.callHandler = { source, call in
                 await PhoneCalls.shared.handle(call, from: source)
+            }
+            server.statusHandler = { source, status in
+                await PhoneDashboard.shared.update(status, from: source)
             }
             server.pairHandler = { request in
                 await MainActor.run {
@@ -166,6 +172,17 @@ final class AppModel: ObservableObject {
     /// Paired devices, most recently used first.
     var recentDevices: [TrustedDevice] { trustedDevices.sorted { $0.lastActive > $1.lastActive } }
 
+    /// Whether [peer] may be paired: nothing is paired yet, or it's the device already paired.
+    func canPair(_ peer: Peer) -> Bool {
+        trust?.allowsPairing(fingerprint: peer.fingerprint, deviceId: peer.id) ?? true
+    }
+
+    /// The device this Mac is paired with, if any.
+    var pairedName: String? { trustedDevices.first?.name }
+
+    /// BubbleDrop started and is receiving.
+    var isReceiving: Bool { server != nil && receivingEnabled }
+
     func isNearby(_ device: TrustedDevice) -> Bool { peers.contains { $0.fingerprint == device.fingerprint } }
 
     private func refreshPeers() {
@@ -176,6 +193,7 @@ final class AppModel: ObservableObject {
             return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
         }
         evaluatePairSuggestion()
+        PhoneDashboard.shared.refresh()
     }
 
     // MARK: Pair suggestions
@@ -200,7 +218,7 @@ final class AppModel: ObservableObject {
         guard Date() < suggestUntil, server != nil, receivingEnabled else { return }
         guard let candidate = peers.first(where: { peer in
             guard let fingerprint = peer.fingerprint else { return false }
-            return !isPaired(peer) && !dismissedSuggestions.contains(fingerprint)
+            return !isPaired(peer) && !dismissedSuggestions.contains(fingerprint) && canPair(peer)
         }) else { return }
         pairSuggestionStatus = .idle
         pairSuggestion = candidate

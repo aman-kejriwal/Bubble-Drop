@@ -160,6 +160,16 @@ class TrustStore(context: Context) {
 
     fun device(fingerprint: String) = _devices.value.firstOrNull { it.fingerprint == fingerprint }
 
+    /**
+     * One pairing per device: pairing is allowed only while nothing is paired, or with the device
+     * already paired (re-pairing after a reinstall or an unpair on its side).
+     */
+    fun allowsPairing(fingerprint: String?, deviceId: String?): Boolean =
+        _devices.value.let { paired -> paired.isEmpty() || paired.any { it.fingerprint == fingerprint || it.deviceId == deviceId } }
+
+    /** The device this one is paired with, if any. */
+    val pairedName: String? get() = _devices.value.firstOrNull()?.name
+
     /** Trusts [fingerprint], replacing any earlier certificate of the same device. */
     @Synchronized
     fun add(fingerprint: String, device: DeviceInfo) = save(

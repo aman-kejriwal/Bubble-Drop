@@ -36,6 +36,8 @@ public final class BubbleDropServer {
     public var notificationHandler: (PhoneSource, NotifyEvent) async -> Void = { _, _ in }
     /// A paired phone's call rang, connected or ended.
     public var callHandler: (PhoneSource, PhoneCall) async -> Void = { _, _ in }
+    /// A paired phone reported its battery, connections and sound settings.
+    public var statusHandler: (PhoneSource, PhoneStatus) async -> Void = { _, _ in }
     private var mirroring = false
     /// The screen being shown right now and who sends it, so turning receiving off or unpairing can end it.
     private var mirrorStream: MirrorStream?
@@ -161,6 +163,13 @@ public final class BubbleDropServer {
                 let source = PhoneSource(fingerprint: client, name: trust.device(for: client)?.name ?? "Phone")
                 await callHandler(source, call)
                 try await wire.sendResponse(status: 200, json: EmptyBody())
+            case "/api/v2/status":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                let body = try await wire.readBody(length: Int(head.contentLength))
+                let status = try JSONDecoder().decode(PhoneStatus.self, from: body)
+                let source = PhoneSource(fingerprint: client, name: trust.device(for: client)?.name ?? "Phone")
+                await statusHandler(source, status)
+                try await wire.sendResponse(status: 200, json: EmptyBody())
             case "/api/v2/mirror":
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))
@@ -235,6 +244,14 @@ public final class BubbleDropServer {
     private func pairStart(_ request: PairStartRequest, _ client: String, _ wire: Wire) async throws {
         guard receivingEnabled else {
             return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
+        }
+        // A Mac never pairs with itself (its own certificate on the other end).
+        guard client != identity.fingerprint else {
+            return try await wire.sendResponse(status: 403, json: ErrorBody(error: "can't pair with itself"))
+        }
+        // One pairing per device: once paired, no other device can even ask.
+        guard trust.allowsPairing(fingerprint: client, deviceId: request.sender.id) else {
+            return try await wire.sendResponse(status: 403, json: ErrorBody(error: "already paired with another device"))
         }
         let state: PairingState? = locked {
             if let current = pairing, current.clientFingerprint != client,

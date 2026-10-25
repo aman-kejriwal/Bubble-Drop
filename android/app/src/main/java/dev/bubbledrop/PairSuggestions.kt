@@ -71,7 +71,9 @@ class PairSuggestions(
             return
         }
         if (System.currentTimeMillis() > armedUntil) return
-        val candidate = peers.firstOrNull { !isPaired(it) && it.fingerprint != null && it.fingerprint !in dismissed }
+        val candidate = peers.firstOrNull {
+            !isPaired(it) && it.fingerprint != null && it.fingerprint !in dismissed && trust.allowsPairing(it.fingerprint, it.id)
+        }
             ?: return
         _status.value = Status.Idle
         _suggestion.value = candidate

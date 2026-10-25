@@ -214,13 +214,14 @@ private struct PeerBubble: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                 if !model.isPaired(peer) {
-                    Text("Pairs first").font(.caption2).foregroundStyle(.secondary)
+                    Text(model.canPair(peer) ? "Pairs first" : "Can't pair").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!model.isPaired(peer) && !model.canPair(peer))
         .onHover { hovering = $0 }
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: hovering)
         .help(model.isPaired(peer) ? "Send to \(peer.name)" : "Pair with \(peer.name), then send")

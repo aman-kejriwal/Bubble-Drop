@@ -95,13 +95,21 @@ class MainActivity : ComponentActivity() {
             BubbleDropTheme {
                 val permissions = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
-                ) { BubbleDropService.start(this) }
+                ) {
+                    BubbleDropService.start(this)
+                    PhoneStatusReporter.bluetoothAllowed()
+                }
                 androidx.compose.runtime.LaunchedEffect(Unit) {
                     val needed = buildList {
                         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
                         // Lets the Mac's call screen answer and end calls.
                         if (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
                             add(Manifest.permission.ANSWER_PHONE_CALLS)
+                        }
+                        // Lets the Mac's widget show connected earbuds, watches and their batteries.
+                        if (Build.VERSION.SDK_INT >= 31 &&
+                            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                            add(Manifest.permission.BLUETOOTH_CONNECT)
                         }
                         if (Build.VERSION.SDK_INT >= 37) add(PERMISSION_LOCAL_NETWORK)
                     }
@@ -132,6 +140,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleShareIntent(intent: Intent?) {
+        intent?.getStringExtra(MirrorRequests.EXTRA_FINGERPRINT)?.let {
+            intent.removeExtra(MirrorRequests.EXTRA_FINGERPRINT)
+            MirrorRequests.opened(it)
+            return
+        }
         if (intent?.getBooleanExtra(PairSuggestions.EXTRA_PAIR, false) == true) {
             intent.removeExtra(PairSuggestions.EXTRA_PAIR)
             Graph.pairSuggestions.pair()
@@ -199,6 +212,15 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
 
     val sharing = sharedUris.isNotEmpty() || sharedLink != null
 
+    // The Mac asked (from its widget) to show this screen: offer the system's consent dialog.
+    val mirrorRequest by MirrorRequests.pending.collectAsState()
+    LaunchedEffect(mirrorRequest, peers) {
+        val fingerprint = mirrorRequest ?: return@LaunchedEffect
+        val peer = peers.firstOrNull { it.fingerprint == fingerprint } ?: return@LaunchedEffect
+        MirrorRequests.handled()
+        if (mirroringTo == null && trusted.any { it.fingerprint == fingerprint }) mirror(peer)
+    }
+
     fun send(peer: Peer, uris: List<Uri>) {
         if (uris.isEmpty()) return
         Graph.scope.launch { Graph.sender.send(peer, uris) }
@@ -210,9 +232,9 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     }
 
     fun tapPeer(peer: Peer) {
-        // Nothing works with an unpaired device; tapping one pairs it instead.
+        // Nothing works with an unpaired device; tapping one pairs it instead (if pairing is allowed).
         if (trusted.none { it.fingerprint == peer.fingerprint }) {
-            Graph.pairSuggestions.pair(peer)
+            if (Graph.trust.allowsPairing(peer.fingerprint, peer.id)) Graph.pairSuggestions.pair(peer)
         } else if (sharedLink != null) {
             Graph.scope.launch { Graph.sender.sendLink(peer, sharedLink) }
             onClearShared()
@@ -335,10 +357,15 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                     nearby.forEachIndexed { i, peer ->
                         val paired = trusted.any { it.fingerprint == peer.fingerprint }
                         val pairingThis = suggestion?.id == peer.id && suggestionStatus == PairSuggestions.Status.Pairing
+                        // One pairing per device: while paired, other devices can't be paired.
+                        val canPair = trusted.isEmpty() ||
+                            trusted.any { it.fingerprint == peer.fingerprint || it.deviceId == peer.id }
                         ListRow(
                             title = peer.name,
                             subtitle = if (paired) listOfNotNull("Paired", peer.model.ifBlank { null }).joinToString(" · ")
-                                else if (pairingThis) "Pairing…" else "Not paired",
+                                else if (pairingThis) "Pairing…"
+                                else if (canPair) "Not paired"
+                                else "Unpair ${trusted.first().name} to pair",
                             leading = { DeviceAvatar(peer.platform) },
                             titleAccessory = if (paired) ({
                                 Icon(Icons.Rounded.Lock, "Paired", tint = ios.green, modifier = Modifier.size(14.dp))
@@ -346,7 +373,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                             trailing = {
                                 when {
                                     pairingThis -> ActivityIndicator(18.dp)
-                                    !paired -> IosButton("Pair", { Graph.pairSuggestions.pair(peer) }, large = false)
+                                    !paired && canPair -> IosButton("Pair", { Graph.pairSuggestions.pair(peer) }, large = false)
                                     sharing -> IosButton("Send", { tapPeer(peer) }, large = false)
                                     peer.platform == "macos" && mirroringTo == null ->
                                         IosButton("Mirror", { mirror(peer) }, style = ButtonStyle.Tinted, large = false)

@@ -142,6 +142,10 @@ class Sender(
                 else "Pair with ${receiver.name} first."
             )
         }
+        if (fingerprint == identity.fingerprint) throw IOException("That's this phone; it can't pair with itself.")
+        if (!trust.allowsPairing(fingerprint, receiver.id)) {
+            throw IOException("This phone is already paired with ${trust.pairedName}. Unpair it to pair with ${receiver.name}.")
+        }
         pair(peer, fingerprint, receiver)
         return fingerprint
     }
@@ -153,6 +157,7 @@ class Sender(
             JSONObject().put("sender", device.toJson()), 15_000)
         when (start.status) {
             200 -> Unit
+            403 -> throw IOException("${peer.name} is already paired with another device.")
             409 -> throw IOException("${peer.name} is busy with another request.")
             503 -> throw IOException("${peer.name} has receiving turned off.")
             else -> throw IOException(start.json.optString("error", "Pairing failed (${start.status})"))

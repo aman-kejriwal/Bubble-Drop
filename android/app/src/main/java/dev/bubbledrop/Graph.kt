@@ -44,6 +44,8 @@ object Graph {
         transfers = TransferRepository()
         identity = TlsIdentity.loadOrCreate()
         trust = TrustStore(context)
+        // A pairing with this phone's own certificate is never valid; drop any left from before.
+        if (trust.isTrusted(identity.fingerprint)) trust.remove(identity.fingerprint)
         prompts = Prompts(context)
         server = ReceiveServer(context, device, identity, trust, prompts, transfers)
         discovery = Discovery(context, device, identity.fingerprint)

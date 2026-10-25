@@ -11,6 +11,11 @@
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Bluetooth accessories and their batteries, for the Mac's widget. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Find My Phone vibrates along with the sound. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
@@ -101,6 +106,10 @@
 
         <receiver
             android:name=".PairSuggestionReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".FindStopReceiver"
             android:exported="false" />
     </application>
 </manifest>

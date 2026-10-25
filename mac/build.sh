@@ -53,6 +53,22 @@ swiftc "${FLAGS[@]}" -parse-as-library -module-name BubbleDropShare \
 cp ShareExtension/Info.plist "$APPEX/Contents/Info.plist"
 codesign --force --sign - --entitlements ShareExtension/ShareExtension.entitlements "$APPEX" >/dev/null
 
+echo "› Widget"
+WIDGET="$APP/Contents/PlugIns/BubbleDropWidget.appex"
+mkdir -p "$WIDGET/Contents/MacOS"
+# Like Apple's widgets, start in _NSExtensionMain: it sets up the extension before WidgetKit runs.
+# Starting at the Swift @main instead crashes at launch, so the widget never reaches the gallery.
+swiftc "${FLAGS[@]}" -parse-as-library -application-extension -module-name BubbleDropWidget \
+  -I "$OUT" -L "$OUT" -lBubbleDropCore -Xlinker -e -Xlinker _NSExtensionMain \
+  Widget/*.swift -o "$WIDGET/Contents/MacOS/BubbleDropWidget"
+cp Widget/Info.plist "$WIDGET/Contents/Info.plist"
+# macOS caches each widget's list by bundle version, so stamp every build to make it reload the
+# list. The extension's version must match the app's, or the widget isn't cached at all.
+BUILD_NUMBER=$(date +%s)
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$WIDGET/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
+codesign --force --sign - --entitlements Widget/Widget.entitlements "$WIDGET" >/dev/null
+
 codesign --force --sign - "$APP" >/dev/null
 
 echo "Built $OUT/bubbledrop-cli and $APP"

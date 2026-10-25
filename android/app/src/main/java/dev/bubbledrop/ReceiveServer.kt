@@ -126,6 +126,16 @@ class ReceiveServer(
                         404 to errorJson("no call")
                     }
                 }
+                "/api/v2/find" -> if (!paired) PAIRING_REQUIRED else {
+                    request.readJson()
+                    FindMyPhone.ring(context, trust.device(peer)?.name ?: "Your Mac")
+                    200 to JSONObject()
+                }
+                "/api/v2/mirror/request" -> if (!paired) PAIRING_REQUIRED else {
+                    request.readJson()
+                    MirrorRequests.request(context, peer, trust.device(peer)?.name ?: "your Mac")
+                    200 to JSONObject()
+                }
                 "/api/v2/notification/dismiss" -> if (!paired) PAIRING_REQUIRED else {
                     NotificationRelay.instance?.dismiss(request.readJson().getString("key"))
                     200 to JSONObject()
@@ -164,6 +174,10 @@ class ReceiveServer(
 
     private fun pairStart(client: String, sender: DeviceInfo): Pair<Int, JSONObject> {
         if (!receivingEnabled) return 503 to errorJson("receiving is off")
+        // A phone never pairs with itself (its own certificate on the other end).
+        if (client == identity.fingerprint) return 403 to errorJson("can't pair with itself")
+        // One pairing per device: once paired, no other device can even ask.
+        if (!trust.allowsPairing(client, sender.id)) return 403 to errorJson("already paired with another device")
         val state = synchronized(pairLock) {
             val current = pairing
             if (current != null && current.client != client && System.currentTimeMillis() - current.started < 150_000) {

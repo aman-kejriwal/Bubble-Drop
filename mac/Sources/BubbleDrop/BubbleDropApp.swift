@@ -28,7 +28,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Files from the Share menu (`bubbledrop://share?path=…`) or opened with BubbleDrop.
     func application(_ application: NSApplication, open urls: [URL]) {
-        Task { @MainActor in AppModel.shared.share(urls) }
+        Task { @MainActor in
+            // bubbledrop://send, mirror, find and open come from the desktop widget's buttons.
+            if let url = urls.first, url.scheme == "bubbledrop", let action = PhoneDashboard.Action(url: url) {
+                PhoneDashboard.shared.perform(action)
+            } else {
+                AppModel.shared.share(urls)
+            }
+        }
     }
 }
 
@@ -236,7 +243,8 @@ struct PeerRow: View {
                     }
                 }
                 Text(paired ? (peer.platform == "android" ? "Android · \(peer.model)" : peer.model)
-                     : "Not paired · you'll pair before sending")
+                     : model.canPair(peer) ? "Not paired · you'll pair before sending"
+                     : "Unpair \(model.pairedName ?? "your device") to pair")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -245,12 +253,14 @@ struct PeerRow: View {
             // Sending to an unpaired device pairs first (AppModel.send); nothing goes out unpaired.
             Button("Send…") { model.chooseFiles(for: peer) }
                 .controlSize(.small)
-                .disabled(model.pairSuggestion?.id == peer.id && model.pairSuggestionStatus == .pairing)
+                .disabled((model.pairSuggestion?.id == peer.id && model.pairSuggestionStatus == .pairing)
+                          || (!paired && !model.canPair(peer)))
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8)
             .fill(isTargeted ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.05)))
         .onDrop(of: [UTType.fileURL], isTargeted: $isTargeted) { providers in
+            guard paired || model.canPair(peer) else { return false }
             loadFileURLs(providers) { urls in model.send(urls, to: peer) }
             return true
         }

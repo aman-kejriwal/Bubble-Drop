@@ -67,6 +67,11 @@ fingerprint itself. Otherwise it must pair first. The apps pair only when the us
 (a Pair button, or the suggestion shown after BubbleDrop is turned on); sending, sharing and
 mirroring never start pairing on their own and report the device as unpaired instead.
 
+A device pairs with one other device only. While it's paired, it answers `pair/start` with
+`403` unless the request comes from the device it's paired with (same certificate fingerprint or
+device ID, e.g. after a reinstall), and it won't start pairing with any other device. Unpairing
+frees it to pair again.
+
 Trust is re-checked for long-lived sessions too: unpairing, or turning BubbleDrop or receiving
 off, ends a mirror session with that device at once on either side.
 
@@ -94,7 +99,7 @@ one pairing at a time.
 
 | step | request | body | response |
 |------|---------|------|----------|
-| 1 | `POST /api/v2/pair/start`   | `{ "sender": DeviceInfo }` | `200 { "commitment" }` · `409` busy · `503` off |
+| 1 | `POST /api/v2/pair/start`   | `{ "sender": DeviceInfo }` | `200 { "commitment" }` · `403` already paired with another device · `409` busy · `503` off |
 | 2 | `POST /api/v2/pair/reveal`  | `{ "nonce": Nc }`          | `200 { "nonce": Ns }`. The server now shows the code |
 | 3 | client checks `commitment`, shows the code, and waits for its user to confirm | | |
 | 4 | `POST /api/v2/pair/confirm` | `{}` | held until the server's user confirms (≤120 s). `200`: paired, `403`: declined |
@@ -232,6 +237,36 @@ one call at a time: `ended` from a phone also clears that phone's call under an 
 `{ "action": "answer" | "decline" | "hangup" | "speaker", "speaker": true }`. For `answer`,
 `speaker: true` switches the phone to speaker once the call connects; for `speaker` it turns the
 speaker on or off. `200 {}`, or `404` if there's no call.
+
+## Phone status (desktop widget)
+
+All three endpoints are for paired clients only.
+
+### `POST /api/v2/status` (phone → Mac)
+The phone's battery, accessories, connections and sound settings, sent to every paired Mac it can
+see whenever one changes and at least once a minute. The Mac treats a phone it hasn't heard from
+in 150 seconds as disconnected.
+
+```json
+{ "battery": 78, "charging": true, "minutesToFull": 40, "powerSaver": false,
+  "bluetoothOn": true,
+  "accessories": [{ "name": "Buds", "kind": "headphones", "battery": 64 }],
+  "wifi": true, "wifiName": "Home", "wifiBars": 4, "carrier": "Airtel", "cellBars": 3,
+  "ringer": "ring", "doNotDisturb": false, "hotspot": true }
+```
+
+`kind` is `headphones`, `watch`, `speaker`, `car`, `input` or `other`. Bars are 0–4. `ringer` is
+`ring`, `vibrate` or `silent`. `hotspot` is whether the phone's Wi-Fi hotspot is on. Optional fields are left out when unknown (e.g. `wifiName`, which
+Android only reveals to apps allowed to use location). Response `200 {}`.
+
+### `POST /api/v2/find` (Mac → phone)
+`{}`. The phone rings at full volume, even on silent, for 30 seconds or until stopped on the
+phone. `200 {}`.
+
+### `POST /api/v2/mirror/request` (Mac → phone)
+`{}`. Asks the phone to start mirroring to this Mac. The phone can't start on its own (Android
+requires consent on the phone), so it offers to: directly if BubbleDrop is open, otherwise with a
+notification. `200 {}` means the offer was shown.
 
 ## Receiver rules
 
