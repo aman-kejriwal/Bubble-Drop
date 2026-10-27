@@ -111,6 +111,7 @@ fun DropOverlay(
         showOffer = false
     }
 
+    val context = LocalContext.current
     AnimatedVisibility(visible = visible, enter = fadeIn(tween(220)), exit = fadeOut(tween(260))) {
         Box(
             Modifier
@@ -133,7 +134,7 @@ fun DropOverlay(
                 ) {
                     val pendingOffer = lastOffer
                     if (showOffer && pendingOffer != null) {
-                        OfferCard(pendingOffer.second) { accept -> Graph.prompts.respond(pendingOffer.first, accept) }
+                        OfferCard(pendingOffer.second) { accept -> answerOffer(context, pendingOffer.first, pendingOffer.second, accept) }
                     } else {
                         lastTransfer?.let { TransferCard(it) { onDismissTransfer(it) } }
                     }
@@ -141,6 +142,14 @@ fun DropOverlay(
             }
         }
     }
+}
+
+/** Accepting files needs the owner's fingerprint (or screen lock); declining never does. */
+fun answerOffer(context: Context, id: String, request: AskRequest, accept: Boolean) {
+    if (!accept) return Graph.prompts.respond(id, false)
+    val what = if (request.files.size == 1) request.files[0].name else "${request.files.size} files"
+    DeviceAuth.confirm(context, "Accept files from ${request.sender.name}?", what,
+        onConfirmed = { Graph.prompts.respond(id, true) })
 }
 
 @Composable

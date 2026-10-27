@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.CancellationSignal
 import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -59,6 +60,7 @@ import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -202,12 +204,15 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
         mirrorTarget = null
     }
     fun mirror(peer: Peer) {
-        mirrorTarget = peer
-        MirrorService.clearError()
-        mirrorConsent.launch(
-            context.getSystemService(android.media.projection.MediaProjectionManager::class.java)
-                .createScreenCaptureIntent()
-        )
+        // Sharing the screen needs the owner's fingerprint first, whoever asked for it (phone or Mac).
+        DeviceAuth.confirm(context, "Mirror to ${peer.name}?", "Your screen will be visible on ${peer.name}", onConfirmed = {
+            mirrorTarget = peer
+            MirrorService.clearError()
+            mirrorConsent.launch(
+                context.getSystemService(android.media.projection.MediaProjectionManager::class.java)
+                    .createScreenCaptureIntent()
+            )
+        })
     }
 
     val sharing = sharedUris.isNotEmpty() || sharedLink != null
@@ -234,7 +239,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     fun tapPeer(peer: Peer) {
         // Nothing works with an unpaired device; tapping one pairs it instead (if pairing is allowed).
         if (trusted.none { it.fingerprint == peer.fingerprint }) {
-            if (Graph.trust.allowsPairing(peer.fingerprint, peer.id)) Graph.pairSuggestions.pair(peer)
+            if (Graph.trust.acceptsPairing) Graph.pairSuggestions.pair(peer)
         } else if (sharedLink != null) {
             Graph.scope.launch { Graph.sender.sendLink(peer, sharedLink) }
             onClearShared()
@@ -357,15 +362,14 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                     nearby.forEachIndexed { i, peer ->
                         val paired = trusted.any { it.fingerprint == peer.fingerprint }
                         val pairingThis = suggestion?.id == peer.id && suggestionStatus == PairSuggestions.Status.Pairing
-                        // One pairing per device: while paired, other devices can't be paired.
-                        val canPair = trusted.isEmpty() ||
-                            trusted.any { it.fingerprint == peer.fingerprint || it.deviceId == peer.id }
+                        // One pairing per device: while paired, nothing else can be paired.
+                        val canPair = trusted.isEmpty()
                         ListRow(
                             title = peer.name,
                             subtitle = if (paired) listOfNotNull("Paired", peer.model.ifBlank { null }).joinToString(" · ")
                                 else if (pairingThis) "Pairing…"
                                 else if (canPair) "Not paired"
-                                else "Unpair ${trusted.first().name} to pair",
+                                else "Already paired with ${trusted.first().name}",
                             leading = { DeviceAvatar(peer.platform) },
                             titleAccessory = if (paired) ({
                                 Icon(Icons.Rounded.Lock, "Paired", tint = ios.green, modifier = Modifier.size(14.dp))
@@ -373,7 +377,8 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                             trailing = {
                                 when {
                                     pairingThis -> ActivityIndicator(18.dp)
-                                    !paired && canPair -> IosButton("Pair", { Graph.pairSuggestions.pair(peer) }, large = false)
+                                    // Unpaired: Pair if allowed, otherwise nothing (no Send or Mirror).
+                                    !paired -> if (canPair) IosButton("Pair", { Graph.pairSuggestions.pair(peer) }, large = false)
                                     sharing -> IosButton("Send", { tapPeer(peer) }, large = false)
                                     peer.platform == "macos" && mirroringTo == null ->
                                         IosButton("Mirror", { mirror(peer) }, style = ButtonStyle.Tinted, large = false)
@@ -621,6 +626,7 @@ private fun EmptyNearby(running: Boolean) {
 
 @Composable
 private fun PromptDialog(prompt: Prompts.Pending) {
+    val context = LocalContext.current
     val respond = { accept: Boolean -> Graph.prompts.respond(prompt.id, accept) }
     when (val kind = prompt.kind) {
         is PromptKind.Offer -> {
@@ -629,29 +635,41 @@ private fun PromptDialog(prompt: Prompts.Pending) {
                 title = "${ask.sender.name} wants to send you " +
                     if (ask.files.size == 1) ask.files[0].name else "${ask.files.size} files",
                 message = "${formatBytes(ask.totalSize)} · saved to Downloads/BubbleDrop",
-                actions = listOf(AlertAction("Decline") { respond(false) }, AlertAction("Accept", bold = true) { respond(true) }),
+                actions = listOf(AlertAction("Decline") { respond(false) },
+                    AlertAction("Accept", bold = true) { answerOffer(context, prompt.id, ask, true) }),
             )
         }
         is PromptKind.PairIncoming -> PairingDialog(
-            title = "Pair with ${kind.sender.name}?",
+            peerName = kind.sender.name,
             detail = "Only tap Pair if ${kind.sender.name} shows this same code.",
             code = kind.code, respond = respond,
         )
         is PromptKind.PairOutgoing -> PairingDialog(
-            title = "Pair with ${kind.peerName}?",
+            peerName = kind.peerName,
             detail = "Only tap Pair if ${kind.peerName} shows this same code. You only need to pair once.",
             code = kind.code, respond = respond,
         )
     }
 }
 
+/** A matching code isn't enough: pairing also needs the owner's fingerprint (or screen lock). */
 @Composable
-private fun PairingDialog(title: String, detail: String, code: String, respond: (Boolean) -> Unit) {
+private fun PairingDialog(peerName: String, detail: String, code: String, respond: (Boolean) -> Unit) {
+    val context = LocalContext.current
     val ios = Ios.colors
+    var auth by remember { mutableStateOf<CancellationSignal?>(null) }
+    // The other device declined or gave up: close the fingerprint prompt along with the code.
+    DisposableEffect(Unit) { onDispose { auth?.cancel() } }
     IosAlert(
-        title = title,
+        title = "Pair with $peerName?",
         message = detail,
-        actions = listOf(AlertAction("Cancel") { respond(false) }, AlertAction("Pair", bold = true) { respond(true) }),
+        actions = listOf(
+            AlertAction("Cancel") { respond(false) },
+            AlertAction("Pair", bold = true) {
+                auth = DeviceAuth.confirm(context, "Pair with $peerName?", "Confirm it's you to trust $peerName",
+                    onConfirmed = { respond(true) })
+            },
+        ),
     ) {
         Spacer(Modifier.height(16.dp))
         Text(

@@ -190,12 +190,9 @@ public final class TrustStore: @unchecked Sendable {
         all.first { $0.fingerprint == fingerprint }
     }
 
-    /// One pairing per device: pairing is allowed only while nothing is paired, or with the device
-    /// already paired (re-pairing after a reinstall or an unpair on its side).
-    public func allowsPairing(fingerprint: String?, deviceId: String?) -> Bool {
-        let paired = all
-        return paired.isEmpty || paired.contains { $0.fingerprint == fingerprint || $0.deviceId == deviceId }
-    }
+    /// One pairing per device, strictly: pairing is possible only while nothing is paired. A paired
+    /// device turns away every request, even one claiming to be its partner; unpair first.
+    public var acceptsPairing: Bool { all.isEmpty }
 
     /// Trusts `fingerprint`, replacing any earlier certificate of the same device.
     public func add(fingerprint: String, device: DeviceInfo) {

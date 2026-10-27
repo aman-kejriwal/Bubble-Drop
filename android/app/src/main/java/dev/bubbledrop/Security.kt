@@ -161,11 +161,10 @@ class TrustStore(context: Context) {
     fun device(fingerprint: String) = _devices.value.firstOrNull { it.fingerprint == fingerprint }
 
     /**
-     * One pairing per device: pairing is allowed only while nothing is paired, or with the device
-     * already paired (re-pairing after a reinstall or an unpair on its side).
+     * One pairing per device, strictly: pairing is possible only while nothing is paired. A paired
+     * device turns away every request, even one claiming to be its partner; unpair first.
      */
-    fun allowsPairing(fingerprint: String?, deviceId: String?): Boolean =
-        _devices.value.let { paired -> paired.isEmpty() || paired.any { it.fingerprint == fingerprint || it.deviceId == deviceId } }
+    val acceptsPairing: Boolean get() = _devices.value.isEmpty()
 
     /** The device this one is paired with, if any. */
     val pairedName: String? get() = _devices.value.firstOrNull()?.name

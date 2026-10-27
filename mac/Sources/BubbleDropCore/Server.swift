@@ -249,9 +249,9 @@ public final class BubbleDropServer {
         guard client != identity.fingerprint else {
             return try await wire.sendResponse(status: 403, json: ErrorBody(error: "can't pair with itself"))
         }
-        // One pairing per device: once paired, no other device can even ask.
-        guard trust.allowsPairing(fingerprint: client, deviceId: request.sender.id) else {
-            return try await wire.sendResponse(status: 403, json: ErrorBody(error: "already paired with another device"))
+        // One pairing per device: once paired, nobody can even ask until it's unpaired here.
+        guard trust.acceptsPairing else {
+            return try await wire.sendResponse(status: 403, json: ErrorBody(error: "already paired"))
         }
         let state: PairingState? = locked {
             if let current = pairing, current.clientFingerprint != client,
@@ -305,6 +305,10 @@ public final class BubbleDropServer {
         }
         guard confirmed, let state else {
             return try await wire.sendResponse(status: 403, json: ErrorBody(error: "pairing declined"))
+        }
+        // Another pairing may have finished while this one waited for the user.
+        guard trust.acceptsPairing else {
+            return try await wire.sendResponse(status: 403, json: ErrorBody(error: "already paired"))
         }
         trust.add(fingerprint: client, device: state.sender)
         try await wire.sendResponse(status: 200, json: EmptyBody())

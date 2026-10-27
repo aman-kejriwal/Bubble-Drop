@@ -137,10 +137,13 @@ public final class BubbleDropClient {
         guard fingerprint != identity.fingerprint else {
             throw BubbleDropError.pairingFailed("That's this Mac; it can't pair with itself.")
         }
-        guard trust.allowsPairing(fingerprint: fingerprint, deviceId: discovered.device.id) else {
+        guard trust.acceptsPairing else {
+            let name = discovered.device.name
+            if trust.isTrusted(fingerprint) {
+                throw BubbleDropError.pairingFailed("\(name) no longer trusts this Mac. Unpair \(name) here, then pair again.")
+            }
             let current = trust.all.first?.name ?? "another device"
-            throw BubbleDropError.pairingFailed(
-                "This Mac is already paired with \(current). Unpair it to pair with \(discovered.device.name).")
+            throw BubbleDropError.pairingFailed("This Mac is already paired with \(current). Unpair it first to pair with \(name).")
         }
         willPair()
         try await pair(endpoint, serverFingerprint: fingerprint, receiver: discovered.device,
@@ -161,7 +164,8 @@ public final class BubbleDropClient {
                                                          allowErrorStatus: true)
         switch status {
         case 200: break
-        case 403: throw BubbleDropError.pairingFailed("\(receiver.name) is already paired with another device.")
+        case 403: throw BubbleDropError.pairingFailed(
+            "\(receiver.name) is already paired. Unpair on \(receiver.name) first to pair it with this Mac.")
         case 409: throw BubbleDropError.busy
         case 503: throw BubbleDropError.receivingOff
         default: throw BubbleDropError.http(status, Self.errorMessage(startData))

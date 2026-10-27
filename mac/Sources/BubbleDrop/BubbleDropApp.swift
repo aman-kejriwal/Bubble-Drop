@@ -244,7 +244,7 @@ struct PeerRow: View {
                 }
                 Text(paired ? (peer.platform == "android" ? "Android · \(peer.model)" : peer.model)
                      : model.canPair(peer) ? "Not paired · you'll pair before sending"
-                     : "Unpair \(model.pairedName ?? "your device") to pair")
+                     : "Already paired with \(model.pairedName ?? "another device")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

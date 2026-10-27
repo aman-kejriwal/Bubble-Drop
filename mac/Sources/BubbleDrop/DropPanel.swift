@@ -259,7 +259,7 @@ private struct OfferContent: View {
             HStack(spacing: 10) {
                 Button { model.answerOffer(false) } label: { Text("Decline").frame(maxWidth: .infinity) }
                     .keyboardShortcut(.cancelAction)
-                Button { model.answerOffer(true) } label: { Text("Accept").frame(maxWidth: .infinity) }
+                Button { model.acceptOffer() } label: { Text("Accept").frame(maxWidth: .infinity) }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
             }

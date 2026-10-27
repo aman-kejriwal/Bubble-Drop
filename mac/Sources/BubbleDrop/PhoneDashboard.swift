@@ -89,7 +89,11 @@ final class PhoneDashboard {
         case .find:
             ask(phone, path: "/api/v2/find", failure: "Couldn't ring \(phone.name)")
         case .mirror:
-            ask(phone, path: "/api/v2/mirror/request", failure: "Couldn't ask \(phone.name) to mirror")
+            // Seeing the phone's screen here needs the owner's Touch ID (or password) first.
+            Task {
+                guard await OwnerAuth.confirm("ask \(phone.name) to show its screen on this Mac") else { return }
+                ask(phone, path: "/api/v2/mirror/request", failure: "Couldn't ask \(phone.name) to mirror")
+            }
         }
     }
 

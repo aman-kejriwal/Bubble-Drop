@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LocalAuthentication
 import BubbleDropCore
 
 struct Transfer: Identifiable {
@@ -78,6 +79,8 @@ final class AppModel: ObservableObject {
     private var trust: TrustStore?
     private let browser: PeerBrowser
     private var pairingAlertOpen = false
+    /// The Touch ID prompt shown after the pairing code, so the other side giving up can close it.
+    private var pairingAuth: LAContext?
     private var discoveredPeers: [Peer] = []
     /// Suggestions are only made until then, so only the device that was just turned on asks.
     private var suggestUntil = Date.distantPast
@@ -129,11 +132,9 @@ final class AppModel: ObservableObject {
                 await PhoneDashboard.shared.update(status, from: source)
             }
             server.pairHandler = { request in
-                await MainActor.run {
-                    AppModel.shared.confirmPairing(
-                        title: "Pair with \(request.sender.name)?",
-                        detail: "Only click Pair if \(request.sender.name) shows this same code.", code: request.code)
-                }
+                await AppModel.shared.confirmPairing(
+                    peerName: request.sender.name,
+                    detail: "Only click Pair if \(request.sender.name) shows this same code.", code: request.code)
             }
             server.onPairingCancelled = {
                 RunLoop.main.perform(inModes: [.common, .modalPanel]) {
@@ -172,9 +173,9 @@ final class AppModel: ObservableObject {
     /// Paired devices, most recently used first.
     var recentDevices: [TrustedDevice] { trustedDevices.sorted { $0.lastActive > $1.lastActive } }
 
-    /// Whether [peer] may be paired: nothing is paired yet, or it's the device already paired.
+    /// Whether pairing is possible at all: only while this Mac has nothing paired.
     func canPair(_ peer: Peer) -> Bool {
-        trust?.allowsPairing(fingerprint: peer.fingerprint, deviceId: peer.id) ?? true
+        trust?.acceptsPairing ?? true
     }
 
     /// The device this Mac is paired with, if any.
@@ -238,10 +239,7 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 _ = try await client.connectPaired(peer.endpoint, confirmPairing: { prompt in
-                    await MainActor.run {
-                        AppModel.shared.confirmPairing(title: "Pair with \(prompt.peerName)?", detail: detail,
-                                                       code: prompt.code)
-                    }
+                    await AppModel.shared.confirmPairing(peerName: prompt.peerName, detail: detail, code: prompt.code)
                 })
                 finishPairing()
                 then?()
@@ -273,8 +271,18 @@ final class AppModel: ObservableObject {
 
     // MARK: Pairing
 
+    /// Shows the code, then asks for Touch ID (or the login password): pairing goes ahead only if
+    /// the user confirmed the code matches the other screen and is this Mac's owner.
+    private func confirmPairing(peerName: String, detail: String, code: String) async -> Bool {
+        guard confirmPairingCode(title: "Pair with \(peerName)?", detail: detail, code: code) else { return false }
+        let auth = LAContext()
+        pairingAuth = auth
+        defer { if pairingAuth === auth { pairingAuth = nil } }
+        return await OwnerAuth.confirm("pair with \(peerName)", context: auth)
+    }
+
     /// Shows the code and returns whether the user confirmed it matches the other screen.
-    private func confirmPairing(title: String, detail: String, code: String) -> Bool {
+    private func confirmPairingCode(title: String, detail: String, code: String) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = title
@@ -286,8 +294,10 @@ final class AppModel: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    /// The other device declined or gave up: close the code alert, or the Touch ID prompt after it.
     private func dismissPairingAlert() {
         if pairingAlertOpen { NSApp.abortModal() }
+        pairingAuth?.invalidate()
     }
 
     // MARK: Receiving
@@ -311,6 +321,17 @@ final class AppModel: ObservableObject {
                     }
                 }
             }
+        }
+    }
+
+    /// Accept, after Touch ID (or the login password) confirms it's the owner. Declining never asks.
+    func acceptOffer() {
+        guard let offer, !offer.accepted, offerAnswer != nil else { return }
+        let what = offer.fileNames.count == 1 ? "“\(offer.fileNames[0])”" : "\(offer.fileNames.count) files"
+        Task {
+            guard await OwnerAuth.confirm("accept \(what) from \(offer.senderName)") else { return }
+            // Still the same offer, and not timed out meanwhile.
+            if self.offer?.id == offer.id { answerOffer(true) }
         }
     }
 

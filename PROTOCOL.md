@@ -67,10 +67,11 @@ fingerprint itself. Otherwise it must pair first. The apps pair only when the us
 (a Pair button, or the suggestion shown after BubbleDrop is turned on); sending, sharing and
 mirroring never start pairing on their own and report the device as unpaired instead.
 
-A device pairs with one other device only. While it's paired, it answers `pair/start` with
-`403` unless the request comes from the device it's paired with (same certificate fingerprint or
-device ID, e.g. after a reinstall), and it won't start pairing with any other device. Unpairing
-frees it to pair again.
+A device pairs with one other device only. While it has any pairing it answers every
+`pair/start` with `403`, even from the device it's paired with or one claiming that device's ID
+or name, re-checks before storing a confirmed pairing, and won't start pairing itself. Only
+unpairing on that device makes it pair again. (If one side unpairs, the other must unpair too
+before the two can pair again.) A device also never pairs with its own certificate.
 
 Trust is re-checked for long-lived sessions too: unpairing, or turning BubbleDrop or receiving
 off, ends a mirror session with that device at once on either side.
@@ -99,12 +100,18 @@ one pairing at a time.
 
 | step | request | body | response |
 |------|---------|------|----------|
-| 1 | `POST /api/v2/pair/start`   | `{ "sender": DeviceInfo }` | `200 { "commitment" }` · `403` already paired with another device · `409` busy · `503` off |
+| 1 | `POST /api/v2/pair/start`   | `{ "sender": DeviceInfo }` | `200 { "commitment" }` · `403` already paired · `409` busy · `503` off |
 | 2 | `POST /api/v2/pair/reveal`  | `{ "nonce": Nc }`          | `200 { "nonce": Ns }`. The server now shows the code |
 | 3 | client checks `commitment`, shows the code, and waits for its user to confirm | | |
 | 4 | `POST /api/v2/pair/confirm` | `{}` | held until the server's user confirms (≤120 s). `200`: paired, `403`: declined |
 | – | `POST /api/v2/pair/wait`    | `{}` | held until the server's user answers (≤120 s): `200 { "accepted": bool }`. Sent alongside step 3 so a decline on the server closes the client's code prompt at once; it doesn't count as the client's confirmation. Older servers answer `404`; ignore it |
 | – | `POST /api/v2/pair/cancel`  | `{}` | `200`; the server dismisses its prompt |
+
+A user "confirms" the code only by accepting it **and** then authenticating as the device's
+owner (fingerprint or Touch ID, falling back to the screen-lock PIN or login password). The
+server answers `confirm` and `wait`, and the client sends `confirm`, only after both. Failed
+or cancelled authentication never counts as accepting. If the other side declines or cancels, a
+device closes its authentication prompt along with the code.
 
 If the commitment check fails, the client cancels and reports possible interference. On
 `200` from confirm, both sides store the other's fingerprint (with device ID and name). A

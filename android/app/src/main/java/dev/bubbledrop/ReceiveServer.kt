@@ -176,8 +176,8 @@ class ReceiveServer(
         if (!receivingEnabled) return 503 to errorJson("receiving is off")
         // A phone never pairs with itself (its own certificate on the other end).
         if (client == identity.fingerprint) return 403 to errorJson("can't pair with itself")
-        // One pairing per device: once paired, no other device can even ask.
-        if (!trust.allowsPairing(client, sender.id)) return 403 to errorJson("already paired with another device")
+        // One pairing per device: once paired, nobody can even ask until it's unpaired here.
+        if (!trust.acceptsPairing) return 403 to errorJson("already paired")
         val state = synchronized(pairLock) {
             val current = pairing
             if (current != null && current.client != client && System.currentTimeMillis() - current.started < 150_000) {
@@ -209,6 +209,8 @@ class ReceiveServer(
             (pairing === state).also { if (it) pairing = null }
         }
         if (!confirmed || !stillCurrent) return 403 to errorJson("pairing declined")
+        // Another pairing may have finished while this one waited for the user.
+        if (!trust.acceptsPairing) return 403 to errorJson("already paired")
         trust.add(client, state.sender)
         return 200 to JSONObject()
     }

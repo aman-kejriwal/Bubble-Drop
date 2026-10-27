@@ -76,12 +76,14 @@ class Prompts(private val context: Context) {
                 "${kind.request.sender.name} wants to send you " +
                     if (kind.request.files.size == 1) kind.request.files[0].name else "${kind.request.files.size} files",
                 formatBytes(kind.request.totalSize),
-                "Accept",
+                // Accepting needs a fingerprint, which can't be asked from a notification: open the app.
+                "Open",
             )
             is PromptKind.PairIncoming -> Triple(
                 "Pair with ${kind.sender.name}?",
                 "Check that ${kind.sender.name} shows ${formatCode(kind.code)}",
-                "Pair",
+                // Pairing needs a fingerprint too: open the app, where the code is confirmed.
+                "Open",
             )
             is PromptKind.PairOutgoing -> return
         }
@@ -98,7 +100,7 @@ class Prompts(private val context: Context) {
             .setContentIntent(open)
             .setAutoCancel(true)
             .addAction(0, "Decline", actionIntent(pending.id, false))
-            .addAction(0, accept, actionIntent(pending.id, true))
+            .addAction(0, accept, open)
             .build()
         runCatching { context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification) }
     }
