@@ -51,6 +51,8 @@ object Graph {
         discovery = Discovery(context, device, identity.fingerprint)
         sender = Sender(context, device, identity, trust, prompts, transfers)
         pairSuggestions = PairSuggestions(context, scope, discovery, trust, sender)
+        MirrorService.loadSettings(context)
+        FolderSync.loadSaved(context)
     }
 
     private fun deviceId(context: Context): String {

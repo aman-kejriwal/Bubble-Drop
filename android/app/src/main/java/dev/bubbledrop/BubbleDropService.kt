@@ -49,6 +49,7 @@ class BubbleDropService : Service() {
             _running.value = true
             Graph.pairSuggestions.arm()
             PhoneStatusReporter.start(this)
+            FolderSync.start(this)
         } catch (e: Exception) {
             Log.e("BubbleDropService", "start failed", e)
             stopSelf()
@@ -64,6 +65,7 @@ class BubbleDropService : Service() {
         // Mirroring runs in its own service and connection; turning BubbleDrop off must end it too.
         if (MirrorService.active.value != null) MirrorService.stop(this)
         PhoneStatusReporter.stop()
+        FolderSync.stop()
         Graph.pairSuggestions.disarm()
         Graph.discovery.stop()
         Graph.server.stop()

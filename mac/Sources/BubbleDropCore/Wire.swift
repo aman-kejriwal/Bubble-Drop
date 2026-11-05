@@ -115,6 +115,16 @@ final class Wire {
     func streamBody(length: Int64, to handle: FileHandle, idleTimeout: TimeInterval = 30,
                     progress: (Int64) -> Void) async throws {
         var written: Int64 = 0
+        try await streamBody(length: length, idleTimeout: idleTimeout) { chunk in
+            try handle.write(contentsOf: chunk)
+            written += Int64(chunk.count)
+            progress(written)
+        }
+    }
+
+    /// Hands exactly `length` body bytes to `sink` in chunks, re-arming an idle timeout per chunk.
+    func streamBody(length: Int64, idleTimeout: TimeInterval = 30, sink: (Data) throws -> Void) async throws {
+        var written: Int64 = 0
         while written < length {
             let chunk: Data
             if !buffer.isEmpty {
@@ -126,10 +136,9 @@ final class Wire {
                 chunk = next
             }
             let take = Int(min(Int64(chunk.count), length - written))
-            try handle.write(contentsOf: chunk.prefix(take))
+            try sink(Data(chunk.prefix(take)))
             if take < chunk.count { buffer = Data(chunk.dropFirst(take)) }
             written += Int64(take)
-            progress(written)
         }
     }
 
@@ -159,6 +168,28 @@ final class Wire {
         head += "Content-Length: \(body.count)\r\n"
         head += final ? "Connection: close\r\n\r\n" : "\r\n"
         try await send(Data(head.utf8) + body, final: final)
+    }
+
+    /// `200` with the raw bytes of [url] (exactly [size] of them) as the body.
+    func sendFileResponse(url: URL, size: Int64) async throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var head = "HTTP/1.1 200 OK\r\n"
+        head += "Content-Type: application/octet-stream\r\n"
+        head += "Content-Length: \(size)\r\n"
+        head += "Connection: close\r\n\r\n"
+        try await send(Data(head.utf8))
+        var sent: Int64 = 0
+        while sent < size {
+            guard let chunk = try handle.read(upToCount: 256 * 1024), !chunk.isEmpty else {
+                throw BubbleDropError.badMessage("\(url.lastPathComponent) changed while sending")
+            }
+            let take = chunk.prefix(Int(size - sent))
+            arm(30)
+            try await send(take)
+            sent += Int64(take.count)
+        }
+        try await send(Data(), final: true)
     }
 }
 

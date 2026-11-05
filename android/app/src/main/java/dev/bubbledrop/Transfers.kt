@@ -16,6 +16,8 @@ data class Transfer(
     val doneBytes: Long = 0,
     val status: Status,
     val savedUris: List<Uri> = emptyList(),
+    /** Where a received folder was saved, relative to storage (e.g. "Download/BubbleDrop/Photos"); Open shows it. */
+    val savedFolder: String? = null,
     /** Set when this transfer is a web link rather than files. */
     val link: String? = null,
     /** For links: whether the receiver opened it right away (otherwise it showed a notification). */

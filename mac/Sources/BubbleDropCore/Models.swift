@@ -41,15 +41,45 @@ public struct DeviceInfo: Codable, Hashable, Sendable {
 
 public struct FileOffer: Codable, Hashable, Sendable {
     public var id: String
+    /// The file's name alone; receivers that don't know `path` save the file under it.
     public var name: String
     public var size: Int64
     public var mimeType: String
+    /// For a file in a sent folder: its path from (and including) that folder, e.g. "Photos/2024/a.jpg".
+    public var path: String?
 
-    public init(id: String = UUID().uuidString, name: String, size: Int64, mimeType: String) {
+    public init(id: String = UUID().uuidString, name: String, size: Int64, mimeType: String, path: String? = nil) {
         self.id = id
         self.name = name
         self.size = size
         self.mimeType = mimeType
+        self.path = path
+    }
+
+    /// The folders to save this file in, outermost first, from a safe `path`; empty for a loose file
+    /// or a path that isn't safe (which is then saved like a loose file).
+    public var folders: [String] {
+        guard let path, isSafeRelativePath(path) else { return [] }
+        return path.split(separator: "/").dropLast().map { sanitizeFileName(String($0)) }
+    }
+}
+
+/// What an offer looks like at the top level: loose files, and sent folders with their file count.
+public struct OfferItem: Hashable, Sendable {
+    public var name: String
+    public var isFolder: Bool
+    public var fileCount: Int
+    public var size: Int64
+
+    public var fileCountText: String { fileCount == 0 ? "empty" : fileCount == 1 ? "1 file" : "\(fileCount) files" }
+}
+
+/// A relative path that can't leave the folder it's created in.
+public func isSafeRelativePath(_ path: String) -> Bool {
+    guard !path.isEmpty, path.utf8.count <= 1024, !path.hasPrefix("/"), !path.contains("\\"),
+          !path.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) else { return false }
+    return path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy {
+        !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255
     }
 }
 
@@ -81,8 +111,51 @@ public func isWebLink(_ url: URL) -> Bool {
 public struct AskRequest: Codable, Sendable {
     public var sender: DeviceInfo
     public var files: [FileOffer]
+    /// Folders in a sent folder that hold no files, as paths like FileOffer.path ("Photos/Empty").
+    /// Optional: older senders leave it out, and older receivers ignore it.
+    public var emptyFolders: [String]?
+
+    public init(sender: DeviceInfo, files: [FileOffer], emptyFolders: [String]? = nil) {
+        self.sender = sender
+        self.files = files
+        self.emptyFolders = emptyFolders?.isEmpty == true ? nil : emptyFolders
+    }
+
+    /// The empty folders to create, each as safe folder names outermost first (unsafe paths dropped).
+    public var emptyFolderComponents: [[String]] {
+        (emptyFolders ?? []).filter(isSafeRelativePath).map { $0.split(separator: "/").map { sanitizeFileName(String($0)) } }
+    }
 
     public var totalSize: Int64 { files.reduce(0) { $0 + $1.size } }
+
+    /// Sent folders and loose files, in the order offered.
+    public var items: [OfferItem] {
+        var items: [OfferItem] = []
+        for file in files {
+            let folder = file.folders.first
+            if let folder, let i = items.firstIndex(where: { $0.isFolder && $0.name == folder }) {
+                items[i].fileCount += 1
+                items[i].size += file.size
+            } else {
+                items.append(OfferItem(name: folder ?? file.name, isFolder: folder != nil, fileCount: 1, size: file.size))
+            }
+        }
+        // A sent folder holding only empty folders still shows up.
+        for top in emptyFolderComponents.compactMap(\.first) where !items.contains(where: { $0.isFolder && $0.name == top }) {
+            items.append(OfferItem(name: top, isFolder: true, fileCount: 0, size: 0))
+        }
+        return items
+    }
+
+    /// "photo.jpg", "Photos (12 files)", "3 files" or "4 items".
+    public var summary: String { describeOffer(items) }
+}
+
+public func describeOffer(_ items: [OfferItem]) -> String {
+    if items.count == 1, let item = items.first {
+        return item.isFolder ? "\(item.name) (\(item.fileCountText))" : item.name
+    }
+    return items.contains(where: \.isFolder) ? "\(items.count) items" : "\(items.count) files"
 }
 
 struct AskResponse: Codable {

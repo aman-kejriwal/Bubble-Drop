@@ -15,7 +15,8 @@ cd mac
 open build/BubbleDrop.app # menu-bar icon (paper plane)
 ```
 
-- Pick a nearby device → **Send…**, or drop files onto its row.
+- Pick a nearby device → **Send…**, or drop files or folders onto its row. Folders arrive with
+  their subfolders intact.
 - Incoming offers show an Accept/Decline prompt; files go to `~/Downloads`.
 - macOS will ask for Local Network access the first time. Allow it. Requires macOS 15+.
 
@@ -41,9 +42,26 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 - Open BubbleDrop and grant notifications (plus local network on Android 17).
-- Tap a nearby device to pick files, or use **Share → BubbleDrop** from any app.
+- Tap a nearby device to pick files, tap **Folder** to send a whole folder, or use
+  **Share → BubbleDrop** from any app.
 - Incoming offers show a dialog or a heads-up notification with Accept/Decline;
   files go to `Download/BubbleDrop`.
+
+## Folder sync
+
+Keep one folder identical on the Mac and the paired phone (protocol: PROTOCOL.md, "Folder sync").
+
+- **Mac:** menu-bar panel → *Folder sync* → **Choose Folder…**
+- **Android:** *Folder Sync* → **Choose Folder…**, then allow **All files access**. BubbleDrop
+  needs the folder's real path to watch it live.
+- Changes sync within seconds while BubbleDrop is on and both devices are on the same Wi-Fi.
+  Anything missed syncs when the devices next see each other, and in a full round every 5 minutes.
+- If both sides edit the same file, both versions are kept: one gets a
+  `(conflict from <device> <date>)` copy. If one side edits and the other deletes, the edit wins.
+- Replaced and deleted files go to the Trash on the Mac and to `.bubbledrop-trash/` (kept 30 days)
+  on the phone. Hidden files, empty folders and symlinks aren't synced.
+- Test it on one Mac: `bubbledrop-cli serve --state A --sync-folder FA --sync-with 127.0.0.1:<B's port>`
+  (and the same for B) after pairing the two.
 
 ## Status / next steps
 

@@ -38,6 +38,12 @@ public final class BubbleDropServer {
     public var callHandler: (PhoneSource, PhoneCall) async -> Void = { _, _ in }
     /// A paired phone reported its battery, connections and sound settings.
     public var statusHandler: (PhoneSource, PhoneStatus) async -> Void = { _, _ in }
+    /// Folder sync: this side's index for a paired device, or nil when no folder is set up.
+    public var syncIndexHandler: (String) async -> SyncIndex? = { _ in nil }
+    /// Folder sync: the file to send for a path in the index, with its size.
+    public var syncFileHandler: (String, String) async -> (URL, Int64)? = { _, _ in nil }
+    /// Folder sync: the paired device's folder changed.
+    public var syncChangedHandler: (String) async -> Void = { _ in }
     private var mirroring = false
     /// The screen being shown right now and who sends it, so turning receiving off or unpairing can end it.
     private var mirrorStream: MirrorStream?
@@ -174,6 +180,34 @@ public final class BubbleDropServer {
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))
                 try await handleMirror(try JSONDecoder().decode(MirrorRequest.self, from: body), client, wire)
+            case "/api/v2/sync/index":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                _ = try await wire.readBody(length: Int(head.contentLength))
+                guard receivingEnabled else {
+                    return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
+                }
+                // The first scan of a big folder hashes every file.
+                wire.arm(600)
+                guard let index = await syncIndexHandler(client) else {
+                    return try await wire.sendResponse(status: 404, json: ErrorBody(error: "folder sync is off"))
+                }
+                try await wire.sendResponse(status: 200, json: index)
+            case "/api/v2/sync/file":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                let body = try await wire.readBody(length: Int(head.contentLength))
+                let request = try JSONDecoder().decode(SyncFileRequest.self, from: body)
+                guard receivingEnabled else {
+                    return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
+                }
+                guard let (url, size) = await syncFileHandler(client, request.path) else {
+                    return try await wire.sendResponse(status: 404, json: ErrorBody(error: "no such file"))
+                }
+                try await wire.sendFileResponse(url: url, size: size)
+            case "/api/v2/sync/changed":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                _ = try await wire.readBody(length: Int(head.contentLength))
+                if receivingEnabled { await syncChangedHandler(client) }
+                try await wire.sendResponse(status: 200, json: EmptyBody())
             case "/api/v2/cancel":
                 if let id = head.query["sessionId"] { await sessions.remove(id, client: client) }
                 try await wire.sendResponse(status: 200, json: EmptyBody())
@@ -347,7 +381,9 @@ public final class BubbleDropServer {
         guard receivingEnabled else {
             return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
         }
-        guard (1...1000).contains(request.files.count), request.files.allSatisfy({ $0.size >= 0 }) else {
+        let folderCount = request.emptyFolders?.count ?? 0
+        guard (request.files.count + folderCount > 0), request.files.count <= 1000, folderCount <= 1000,
+              request.files.allSatisfy({ $0.size >= 0 }) else {
             return try await wire.sendResponse(status: 400, json: ErrorBody(error: "invalid file list"))
         }
         let began: Bool = locked {
@@ -371,6 +407,17 @@ public final class BubbleDropServer {
         }
         let id = await sessions.create(client: client, files: request.files)
         onEvent(.accepted(sessionId: id, request: request))
+        // Empty folders are made right away, in the same place the folder's files will go.
+        for folders in request.emptyFolderComponents {
+            guard let top = folders.first else { continue }
+            var directory = await sessions.folder(top, in: id) { uniqueDestination(in: saveDirectory, name: top) }
+            for sub in folders.dropFirst() { directory.appendPathComponent(sub, isDirectory: true) }
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        if request.files.isEmpty {
+            await sessions.remove(id, client: client)
+            onEvent(.finished(sessionId: id, files: []))
+        }
         try await wire.sendResponse(status: 200, json: AskResponse(sessionId: id))
     }
 
@@ -406,7 +453,15 @@ public final class BubbleDropServer {
             throw error
         }
 
-        let destination = uniqueDestination(in: saveDirectory, name: sanitizeFileName(offer.name))
+        // A file from a sent folder goes into that folder; the folder itself never replaces one already there.
+        var directory = saveDirectory
+        let folders = offer.folders
+        if let top = folders.first {
+            directory = await sessions.folder(top, in: sessionId) { uniqueDestination(in: saveDirectory, name: top) }
+            for sub in folders.dropFirst() { directory.appendPathComponent(sub, isDirectory: true) }
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let destination = uniqueDestination(in: directory, name: sanitizeFileName(offer.name))
         try fm.moveItem(at: partial, to: destination)
         onEvent(.fileReceived(sessionId: sessionId, url: destination))
         if let finished = await sessions.complete(sessionId: sessionId, size: offer.size, url: destination) {
@@ -446,6 +501,8 @@ actor SessionStore {
         var receivedBytes: Int64 = 0
         var received: [URL] = []
         var lastActivity = Date()
+        /// Sent folder name → where it's saved (e.g. "Photos (1)" if "Photos" already existed).
+        var folders: [String: URL] = [:]
     }
 
     private var sessions: [String: Session] = [:]
@@ -474,6 +531,14 @@ actor SessionStore {
         s.pending[offer.id] = offer
         s.inFlight -= 1
         sessions[sessionId] = s
+    }
+
+    /// Where the sent folder [name] is saved in this session, choosing the place the first time.
+    func folder(_ name: String, in sessionId: String, choose: () -> URL) -> URL {
+        if let url = sessions[sessionId]?.folders[name] { return url }
+        let url = choose()
+        sessions[sessionId]?.folders[name] = url
+        return url
     }
 
     func receivedBytes(_ sessionId: String) -> Int64 {

@@ -8,6 +8,8 @@ struct IncomingOffer: Identifiable, Equatable {
     let senderName: String
     let platform: String
     let fileNames: [String]
+    /// Sent folders and loose files, for display.
+    var items: [OfferItem] = []
     let totalBytes: Int64
     /// Set once the user accepts, until the server reports the session and the transfer takes over.
     var accepted = false
@@ -232,6 +234,19 @@ private struct OfferContent: View {
     @EnvironmentObject private var model: AppModel
     let offer: IncomingOffer
 
+    /// Folders by name and file count, then loose files.
+    private var shown: [String] {
+        offer.items.isEmpty ? offer.fileNames
+            : offer.items.map { $0.isFolder ? "\($0.name) (\($0.fileCountText))" : $0.name }
+    }
+
+    private var sharing: String {
+        guard offer.items.contains(where: \.isFolder) else {
+            return offer.fileNames.count == 1 ? "a file" : "\(offer.fileNames.count) files"
+        }
+        return offer.items.count == 1 ? "a folder" : "\(offer.items.count) items"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             DropOrb(platform: offer.platform, phase: .waiting)
@@ -239,12 +254,12 @@ private struct OfferContent: View {
                 .font(.title2.weight(.semibold))
                 .lineLimit(1)
             Text(offer.accepted ? "Connecting…"
-                 : "wants to share \(offer.fileNames.count == 1 ? "a file" : "\(offer.fileNames.count) files")")
+                 : "wants to share \(sharing)")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(offer.fileNames.prefix(2), id: \.self) { Text($0).lineLimit(1).truncationMode(.middle) }
-                if offer.fileNames.count > 2 {
-                    Text("and \(offer.fileNames.count - 2) more").foregroundStyle(.secondary)
+                ForEach(shown.prefix(2), id: \.self) { Text($0).lineLimit(1).truncationMode(.middle) }
+                if shown.count > 2 {
+                    Text("and \(shown.count - 2) more").foregroundStyle(.secondary)
                 }
                 Text("\(formatBytes(offer.totalBytes)) · saves to Downloads")
                     .font(.caption)

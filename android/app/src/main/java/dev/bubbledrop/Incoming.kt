@@ -74,7 +74,7 @@ class Prompts(private val context: Context) {
         val (title, text, accept) = when (val kind = pending.kind) {
             is PromptKind.Offer -> Triple(
                 "${kind.request.sender.name} wants to send you " +
-                    if (kind.request.files.size == 1) kind.request.files[0].name else "${kind.request.files.size} files",
+                    kind.request.summary(),
                 formatBytes(kind.request.totalSize),
                 // Accepting needs a fingerprint, which can't be asked from a notification: open the app.
                 "Open",

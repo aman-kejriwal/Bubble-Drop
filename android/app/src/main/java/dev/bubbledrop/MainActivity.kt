@@ -129,6 +129,8 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         Links.appVisible = true
+        // Back from the "All files access" screen.
+        FolderSync.refreshAccess(this)
     }
 
     override fun onPause() {
@@ -195,6 +197,8 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     val mirrorError by MirrorService.error.collectAsState()
     val controlEnabled by ControlService.enabled.collectAsState()
     val relayEnabled by NotificationRelay.enabled.collectAsState()
+    val mirrorReadyFor by MirrorService.ready.collectAsState()
+    val mirrorWithoutAsking by MirrorService.stayReady.collectAsState()
     val mirrorConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val peer = mirrorTarget
         val data = result.data
@@ -203,16 +207,26 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
         }
         mirrorTarget = null
     }
+    /** Mirrors once the owner confirmed: on a kept screen capture, or after Android's consent. */
+    fun startMirror(peer: Peer) {
+        MirrorService.clearError()
+        if (MirrorService.resume(peer)) return
+        mirrorTarget = peer
+        val projections = context.getSystemService(android.media.projection.MediaProjectionManager::class.java)
+        // The whole screen, so Android's dialog doesn't offer (or default to) a single app.
+        mirrorConsent.launch(
+            if (Build.VERSION.SDK_INT >= 34) {
+                projections.createScreenCaptureIntent(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay())
+            } else {
+                projections.createScreenCaptureIntent()
+            }
+        )
+    }
+    // Sharing the screen needs the owner's fingerprint first, whoever asked for it (phone or Mac).
+    // Only a Mac's request on a kept screen capture skips it (see MirrorRequests).
     fun mirror(peer: Peer) {
-        // Sharing the screen needs the owner's fingerprint first, whoever asked for it (phone or Mac).
-        DeviceAuth.confirm(context, "Mirror to ${peer.name}?", "Your screen will be visible on ${peer.name}", onConfirmed = {
-            mirrorTarget = peer
-            MirrorService.clearError()
-            mirrorConsent.launch(
-                context.getSystemService(android.media.projection.MediaProjectionManager::class.java)
-                    .createScreenCaptureIntent()
-            )
-        })
+        DeviceAuth.confirm(context, "Mirror to ${peer.name}?", "Your screen will be visible on ${peer.name}",
+            onConfirmed = { startMirror(peer) })
     }
 
     val sharing = sharedUris.isNotEmpty() || sharedLink != null
@@ -234,6 +248,16 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         pickTarget?.let { send(it, uris) }
         pickTarget = null
+    }
+    var folderTarget by remember { mutableStateOf<Peer?>(null) }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        val peer = folderTarget
+        folderTarget = null
+        if (peer != null && tree != null) Graph.scope.launch { Graph.sender.sendFolder(peer, tree) }
+    }
+    fun sendFolder(peer: Peer) {
+        folderTarget = peer
+        folderPicker.launch(null)
     }
 
     fun tapPeer(peer: Peer) {
@@ -311,7 +335,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                             subtitle = "Your screen is visible on $name",
                             leading = { IconTile(Icons.Rounded.Cast, ios.green) },
                             trailing = {
-                                IosButton("Stop", { MirrorService.stop(context) }, style = ButtonStyle.Tinted,
+                                IosButton("Stop", { MirrorService.endSession(context) }, style = ButtonStyle.Tinted,
                                     color = ios.red, large = false)
                             },
                             divider = true,
@@ -325,6 +349,25 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                                 if (controlEnabled) Badge("On", ios.green)
                                 else IosButton("Turn On", { ControlService.openSettings(context) },
                                     style = ButtonStyle.Tinted, large = false)
+                            },
+                        )
+                    }
+                }
+            }
+            if (mirroringTo == null) mirrorReadyFor?.let { name ->
+                item(key = "mirror-ready") {
+                    GroupedSection(
+                        header = "Screen Mirroring",
+                        footer = "$name can show this screen after its owner confirms with Touch ID, " +
+                            "without asking here. Android's casting indicator stays on while it's ready.",
+                    ) {
+                        ListRow(
+                            title = "Ready for $name",
+                            subtitle = "Mirrors without asking on this phone",
+                            leading = { IconTile(Icons.Rounded.Cast, ios.blue) },
+                            trailing = {
+                                IosButton("Turn Off", { MirrorService.stop(context) }, style = ButtonStyle.Tinted,
+                                    color = ios.red, large = false)
                             },
                         )
                     }
@@ -350,7 +393,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                     footer = if (peers.isEmpty()) null else {
                         val anyPaired = nearby.any { p -> trusted.any { it.fingerprint == p.fingerprint } }
                         (if (anyPaired) "Paired devices are listed first. " else "") +
-                            (if (sharing) "Tap a device to send." else "Tap a device to choose files to send it.") +
+                            (if (sharing) "Tap a device to send." else "Tap a device to choose files to send it, or Folder to send a folder.") +
                             if (nearby.any { p -> trusted.none { it.fingerprint == p.fingerprint } })
                                 " Devices must be paired before you can share or mirror." else ""
                     },
@@ -380,8 +423,12 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                                     // Unpaired: Pair if allowed, otherwise nothing (no Send or Mirror).
                                     !paired -> if (canPair) IosButton("Pair", { Graph.pairSuggestions.pair(peer) }, large = false)
                                     sharing -> IosButton("Send", { tapPeer(peer) }, large = false)
-                                    peer.platform == "macos" && mirroringTo == null ->
-                                        IosButton("Mirror", { mirror(peer) }, style = ButtonStyle.Tinted, large = false)
+                                    else -> {
+                                        IosButton("Folder", { sendFolder(peer) }, style = ButtonStyle.Plain, large = false)
+                                        if (peer.platform == "macos" && mirroringTo == null) {
+                                            IosButton("Mirror", { mirror(peer) }, style = ButtonStyle.Tinted, large = false)
+                                        }
+                                    }
                                 }
                             },
                             chevron = paired && !sharing,
@@ -400,7 +447,9 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                 GroupedSection(
                     header = "On Your Mac",
                     footer = "Show this phone's notifications on your paired Macs and reply from there. " +
-                        "Remote control lets your Mac drive this phone while you mirror its screen.",
+                        "Remote control lets your Mac drive this phone while you mirror its screen. " +
+                        "Mirror Without Asking lets your Mac show this screen after its owner's Touch ID, " +
+                        "once you've allowed it here the first time.",
                 ) {
                     ListRow(
                         title = "Notifications",
@@ -415,9 +464,27 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                         leading = { IconTile(Icons.Rounded.Mouse, ios.indigo) },
                         trailing = { Text(if (controlEnabled) "On" else "Off", style = IosType.body, color = ios.secondaryLabel) },
                         chevron = true,
+                        divider = true,
                         onClick = { ControlService.openSettings(context) },
                     )
+                    ListRow(
+                        title = "Mirror Without Asking",
+                        leading = { IconTile(Icons.Rounded.Cast, ios.blue) },
+                        trailing = {
+                            IosSwitch(mirrorWithoutAsking) { on ->
+                                // Letting the Mac see this screen unasked is the owner's call: confirm it's them.
+                                if (on) DeviceAuth.confirm(context, "Mirror without asking?",
+                                    "Your Mac will be able to show this screen after its owner's Touch ID",
+                                    onConfirmed = { MirrorService.setStayReady(context, true) })
+                                else MirrorService.setStayReady(context, false)
+                            }
+                        },
+                    )
                 }
+            }
+
+            if (trusted.isNotEmpty()) {
+                item(key = "sync") { FolderSyncSection(trusted.first().name) }
             }
 
             if (trusted.isNotEmpty()) {
@@ -633,7 +700,7 @@ private fun PromptDialog(prompt: Prompts.Pending) {
             val ask = kind.request
             IosAlert(
                 title = "${ask.sender.name} wants to send you " +
-                    if (ask.files.size == 1) ask.files[0].name else "${ask.files.size} files",
+                    ask.summary(),
                 message = "${formatBytes(ask.totalSize)} · saved to Downloads/BubbleDrop",
                 actions = listOf(AlertAction("Decline") { respond(false) },
                     AlertAction("Accept", bold = true) { answerOffer(context, prompt.id, ask, true) }),

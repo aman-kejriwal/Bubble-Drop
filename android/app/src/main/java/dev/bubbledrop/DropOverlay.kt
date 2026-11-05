@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -147,7 +148,7 @@ fun DropOverlay(
 /** Accepting files needs the owner's fingerprint (or screen lock); declining never does. */
 fun answerOffer(context: Context, id: String, request: AskRequest, accept: Boolean) {
     if (!accept) return Graph.prompts.respond(id, false)
-    val what = if (request.files.size == 1) request.files[0].name else "${request.files.size} files"
+    val what = request.summary()
     DeviceAuth.confirm(context, "Accept files from ${request.sender.name}?", what,
         onConfirmed = { Graph.prompts.respond(id, true) })
 }
@@ -160,26 +161,30 @@ private fun OfferCard(request: AskRequest, respond: (Boolean) -> Unit) {
         Text(request.sender.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(
-            "wants to share " + if (request.files.size == 1) "a file" else "${request.files.size} files",
+            "wants to share " + request.items().let { items ->
+                if (items.none { it.isFolder }) { if (request.files.size == 1) "a file" else "${request.files.size} files" }
+                else if (items.size == 1) "a folder" else "${items.size} items"
+            },
             style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
         Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest,
             modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                request.files.take(3).forEach {
+                val items = request.items()
+                items.take(3).forEach {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Description, null, tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp))
+                        Icon(if (it.isFolder) Icons.Rounded.Folder else Icons.Rounded.Description, null,
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(it.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        Text(it.label(), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f))
                         Text(formatBytes(it.size), style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                if (request.files.size > 3) {
-                    Text("and ${request.files.size - 3} more", style = MaterialTheme.typography.bodySmall,
+                if (items.size > 3) {
+                    Text("and ${items.size - 3} more", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(4.dp))
@@ -418,6 +423,13 @@ private fun formatEta(seconds: Double): String {
 }
 
 internal fun openReceived(context: Context, transfer: Transfer) {
+    // A received folder: open it in the Files app, as Android's Downloads view lists files without folders.
+    transfer.savedFolder?.let { folder ->
+        val uri = android.provider.DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:$folder")
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (runCatching { context.startActivity(view) }.isSuccess) return
+    }
     val uri = transfer.savedUris.singleOrNull()
     val intent = if (uri != null) {
         Intent(Intent.ACTION_VIEW).setDataAndType(uri, context.contentResolver.getType(uri))

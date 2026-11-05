@@ -87,19 +87,21 @@ final class PhoneDashboard {
         case .send:
             AppModel.shared.chooseFiles(for: peer)
         case .find:
-            ask(phone, path: "/api/v2/find", failure: "Couldn't ring \(phone.name)")
+            ask(phone, EmptyRequest(), path: "/api/v2/find", failure: "Couldn't ring \(phone.name)")
         case .mirror:
-            // Seeing the phone's screen here needs the owner's Touch ID (or password) first.
+            // Seeing the phone's screen here needs the owner's Touch ID (or password) first. A phone
+            // ready for this Mac (Mirror Without Asking) then starts without asking anything.
             Task {
-                guard await OwnerAuth.confirm("ask \(phone.name) to show its screen on this Mac") else { return }
-                ask(phone, path: "/api/v2/mirror/request", failure: "Couldn't ask \(phone.name) to mirror")
+                guard await OwnerAuth.confirm("show \(phone.name)'s screen on this Mac") else { return }
+                ask(phone, MirrorAskRequest(ownerConfirmed: true), path: "/api/v2/mirror/request",
+                    failure: "Couldn't ask \(phone.name) to mirror")
             }
         }
     }
 
-    private func ask(_ phone: TrustedDevice, path: String, failure: String) {
+    private func ask<Body: Encodable & Sendable>(_ phone: TrustedDevice, _ body: Body, path: String, failure: String) {
         Task {
-            let status = await AppModel.shared.sendToPhone(EmptyRequest(), path: path, fingerprint: phone.fingerprint)
+            let status = await AppModel.shared.sendToPhone(body, path: path, fingerprint: phone.fingerprint)
             if status != 200 {
                 alert(failure, status == nil ? "\(phone.name) didn't respond." : "Update BubbleDrop on the phone and try again.")
             }

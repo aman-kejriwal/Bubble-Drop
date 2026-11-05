@@ -50,8 +50,13 @@ connection. JSON bodies are UTF-8 and capped at 1 MiB. Binary values in JSON are
   "platform": "macos", "protocolVersion": 2 }
 
 // FileOffer
-{ "id": "…uuid…", "name": "photo.jpg", "size": 123456, "mimeType": "image/jpeg" }
+{ "id": "…uuid…", "name": "photo.jpg", "size": 123456, "mimeType": "image/jpeg",
+  "path": "Trip/Day 1/photo.jpg" }   // optional: only for a file in a sent folder
 ```
+
+Sending a folder offers each file in it (hidden files, symlinks and empty folders left out), with
+`path` giving its place from and including the sent folder. `name` stays the bare file name, so a
+receiver that predates `path` still saves every file, just without the folders.
 
 Errors return `{ "error": "message" }` with a non-2xx status.
 
@@ -271,14 +276,98 @@ Android only reveals to apps allowed to use location). Response `200 {}`.
 phone. `200 {}`.
 
 ### `POST /api/v2/mirror/request` (Mac → phone)
-`{}`. Asks the phone to start mirroring to this Mac. The phone can't start on its own (Android
-requires consent on the phone), so it offers to: directly if BubbleDrop is open, otherwise with a
-notification. `200 {}` means the offer was shown.
+`{ "ownerConfirmed": bool }`. Asks the phone to start mirroring to this Mac. The Mac sends
+`ownerConfirmed: true` only right after its owner confirmed with Touch ID (or password). Older
+Macs send `{}`, which counts as `false`.
+
+If the phone's user turned on "Mirror Without Asking", the phone keeps the screen capture it was
+last allowed between sessions (Android's casting indicator stays on), and a request with
+`ownerConfirmed: true` starts mirroring at once, with nothing shown on the phone. Otherwise the
+phone's owner confirms with a fingerprint, then Android's consent for the whole screen:
+directly if BubbleDrop is open, otherwise from a notification. Stopping the kept capture
+on the phone, Android ending it, unpairing, or turning the setting off means consent is needed
+again. `200 {}` means the request was handled (mirroring started or the offer was shown).
+
+## Folder sync
+
+Each device can pick one folder to keep identical with its paired device. Sync is two-way and
+starts within seconds of a change while both are on the same network; changes made while apart
+sync when they next see each other. Every device only ever changes **its own** folder: it fetches
+the other side's index, decides per file, and pulls what it needs. All three endpoints are for
+paired clients only; `503` while receiving is off.
+
+### What is synced
+
+Regular files, by their path relative to the folder (`/`-separated, as stored on disk). Skipped:
+symlinks, empty folders, any path component starting with `.` (this also hides BubbleDrop's own
+`.bubbledrop-partial-*` downloads and `.bubbledrop-trash/`), names starting with `~$`,
+`Thumbs.db`, `desktop.ini`, and names ending in `.tmp`, `.part`, `.crdownload` or `.download`. A
+file modified in the last 2 seconds is left until it settles. A path from the other side is
+rejected if it is absolute, has an empty, `.` or `..` component, a backslash or a control
+character, or is longer than 1024 bytes.
+
+### `POST /api/v2/sync/index`
+Body `{}`. Response `200 { "folder": "Notes", "entries": [SyncEntry, …] }`, or `404` if this device
+has no sync folder. The device rescans its folder first, so the index is current. JSON responses
+here may exceed 1 MiB (up to 64 MiB).
+
+```jsonc
+// SyncEntry
+{ "path": "Projects/plan.txt", "size": 1234,
+  "hash": "…sha-256 hex…",   // the file's content now; null if it was deleted here
+  "base": "…sha-256 hex…" }  // the content both devices last agreed on; null if never
+```
+
+`base` is what makes deletes and conflicts work without timestamps: a device records a file's
+hash as `base` whenever it sees both sides holding the same content, and keeps an entry with
+`hash: null` after a delete until the other side has deleted it too.
+
+### `POST /api/v2/sync/file`
+Body `{ "path": "…" }`. Response `200` with the raw bytes (`Content-Type:
+application/octet-stream`, exact `Content-Length`), or `404` if the path isn't a file in the
+index. The puller hashes what it receives and discards it if the hash isn't the one the index
+promised (the file changed in between); the next round picks up the new version.
+
+### `POST /api/v2/sync/changed`
+Body `{}`. Response `200 {}`. "My folder changed, sync with me soon." Sent after a local change,
+and after a sync round that changed anything (so the other side records the new `base`). A
+device that receives it syncs after a short delay; rounds that change nothing send nothing, so
+the exchange ends.
+
+### Deciding
+
+For each path, with `L`/`Lb` this device's hash and base and `R`/`Rb` the other's (null when
+the path is missing from an index):
+
+```
+if L == R                         → in sync; set Lb = L (drop the entry if both are null)
+remoteNewer = Rb == L && Lb != R  // the other side saw our version, then changed it
+localNewer  = Lb == R && Rb != L  // we saw theirs, then changed ours
+remoteNewer only                  → take R: pull it, or delete our file if R is null
+localNewer only                   → nothing; the other side will pull from us
+otherwise (a conflict):
+  L is null                       → take R   (an edit beats a delete)
+  R is null                       → nothing
+  our fingerprint < theirs        → nothing  (the smaller certificate fingerprint keeps the name)
+  else                            → rename ours to "name (conflict from <this device> <date>).ext",
+                                    then take R; the copy syncs to the other side as a new file
+```
+
+Before replacing or deleting a file, a device checks it hasn't changed since it was scanned, and
+skips it for this round if it has. Replaced and deleted files go to the Trash (macOS) or
+`.bubbledrop-trash/` in the folder (Android, kept 30 days), never straight to deletion. A
+device whose folder is missing or unreadable stops syncing rather than reporting its files as
+deleted. Picking a different folder starts over with no `base`s, so the first round only adds
+files on both sides.
 
 ## Receiver rules
 
 - Use only the last path component of `name`; strip leading dots, `/`, `\`
   and `:`; never overwrite (`name (1).ext`, …).
+- With a `path`, recreate its folders inside the save folder, each folder name cleaned like a file
+  name. A sent folder never merges into an existing one: if `Trip` exists, the whole send goes to
+  `Trip (1)`. A `path` that is absolute, or has an empty, `.` or `..` component, a backslash or a
+  control character, is ignored and the file is saved like a loose one.
 - Write to a temporary file and move it into place only after the full length
   has arrived.
 - Sessions expire 10 minutes after the last activity.

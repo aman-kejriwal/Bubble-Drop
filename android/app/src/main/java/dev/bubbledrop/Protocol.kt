@@ -33,12 +33,21 @@ data class DeviceInfo(
     }
 }
 
-data class FileOffer(val id: String, val name: String, val size: Long, val mimeType: String) {
+/**
+ * [name] is the file's name alone (receivers that don't know [path] save it under that). [path] is set
+ * for a file in a sent folder: its path from, and including, that folder, e.g. "Photos/2024/a.jpg".
+ */
+data class FileOffer(val id: String, val name: String, val size: Long, val mimeType: String, val path: String? = null) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
         .put("name", name)
         .put("size", size)
         .put("mimeType", mimeType)
+        .apply { if (path != null) put("path", path) }
+
+    /** The folders to save this file in, outermost first; empty for a loose file or an unsafe path. */
+    val folders: List<String>
+        get() = path?.takeIf(::isSafeRelativePath)?.split('/')?.dropLast(1)?.map(::sanitizeFileName).orEmpty()
 
     companion object {
         fun fromJson(o: JSONObject) = FileOffer(
@@ -46,23 +55,75 @@ data class FileOffer(val id: String, val name: String, val size: Long, val mimeT
             name = o.optString("name", "file"),
             size = o.getLong("size"),
             mimeType = o.optString("mimeType", "application/octet-stream"),
+            path = if (o.isNull("path")) null else o.optString("path"),
         )
     }
 }
 
-data class AskRequest(val sender: DeviceInfo, val files: List<FileOffer>) {
+/** What an offer looks like at the top level: loose files, and sent folders with their file count. */
+data class OfferItem(val name: String, val isFolder: Boolean, val fileCount: Int, val size: Long)
+
+/** A relative path that can't leave the folder it's created in. */
+fun isSafeRelativePath(path: String): Boolean {
+    if (path.isEmpty() || path.toByteArray().size > 1024 || path.startsWith("/") || path.contains('\\')) return false
+    if (path.any { it.code < 0x20 || it.code == 0x7f }) return false
+    return path.split('/').all { it.isNotEmpty() && it != "." && it != ".." && it.toByteArray().size <= 255 }
+}
+
+fun offerItems(files: List<FileOffer>, emptyFolderTops: List<String> = emptyList()): List<OfferItem> {
+    val items = mutableListOf<OfferItem>()
+    for (file in files) {
+        val folder = file.folders.firstOrNull()
+        val i = if (folder == null) -1 else items.indexOfFirst { it.isFolder && it.name == folder }
+        if (i >= 0) items[i] = items[i].copy(fileCount = items[i].fileCount + 1, size = items[i].size + file.size)
+        else items += OfferItem(folder ?: file.name, folder != null, 1, file.size)
+    }
+    // A sent folder holding only empty folders still shows up.
+    for (top in emptyFolderTops.distinct()) {
+        if (items.none { it.isFolder && it.name == top }) items += OfferItem(top, true, 0, 0)
+    }
+    return items
+}
+
+fun OfferItem.label(): String = if (!isFolder) name
+    else "$name (${when (fileCount) { 0 -> "empty"; 1 -> "1 file"; else -> "$fileCount files" }})"
+
+/** "photo.jpg", "Photos (12 files)", "3 files" or "4 items". */
+fun describeOffer(items: List<OfferItem>): String {
+    items.singleOrNull()?.let { return it.label() }
+    return if (items.any { it.isFolder }) "${items.size} items" else "${items.size} files"
+}
+
+/**
+ * [emptyFolders]: folders in a sent folder that hold no files, as paths like [FileOffer.path]
+ * ("Photos/Empty"). Older senders leave it out, and older receivers ignore it.
+ */
+data class AskRequest(val sender: DeviceInfo, val files: List<FileOffer>, val emptyFolders: List<String> = emptyList()) {
     val totalSize: Long get() = files.sumOf { it.size }
+
+    /** The empty folders to create, each as safe folder names outermost first (unsafe paths dropped). */
+    val emptyFolderComponents: List<List<String>>
+        get() = emptyFolders.filter(::isSafeRelativePath).map { path -> path.split('/').map(::sanitizeFileName) }
+
+    /** Sent folders and loose files, in the order offered. */
+    fun items(): List<OfferItem> = offerItems(files, emptyFolderComponents.map { it.first() })
+
+    /** "photo.jpg", "Photos (12 files)", "3 files" or "4 items". */
+    fun summary(): String = describeOffer(items())
 
     fun toJson(): JSONObject = JSONObject()
         .put("sender", sender.toJson())
         .put("files", JSONArray(files.map { it.toJson() }))
+        .apply { if (emptyFolders.isNotEmpty()) put("emptyFolders", JSONArray(emptyFolders)) }
 
     companion object {
         fun fromJson(o: JSONObject): AskRequest {
             val files = o.getJSONArray("files")
+            val folders = o.optJSONArray("emptyFolders")
             return AskRequest(
                 sender = DeviceInfo.fromJson(o.getJSONObject("sender")),
                 files = (0 until files.length()).map { FileOffer.fromJson(files.getJSONObject(it)) },
+                emptyFolders = if (folders == null) emptyList() else (0 until folders.length()).map { folders.getString(it) },
             )
         }
     }

@@ -114,7 +114,17 @@ public struct WidgetSnapshot: Codable, Sendable, Equatable {
     }
 }
 
-/// Body of `POST /api/v2/find` and `POST /api/v2/mirror/request` (Mac → phone): no fields.
+/// Body of `POST /api/v2/find` (Mac → phone): no fields.
 public struct EmptyRequest: Codable, Sendable {
     public init() {}
+}
+
+/// Body of `POST /api/v2/mirror/request` (Mac → phone).
+public struct MirrorAskRequest: Codable, Sendable {
+    /// The Mac's owner confirmed with Touch ID (or password) just now, so a phone ready for this Mac needn't ask.
+    public var ownerConfirmed: Bool
+
+    public init(ownerConfirmed: Bool) {
+        self.ownerConfirmed = ownerConfirmed
+    }
 }

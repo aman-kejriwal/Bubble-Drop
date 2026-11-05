@@ -96,8 +96,10 @@ class FindStopReceiver : BroadcastReceiver() {
 }
 
 /**
- * A paired Mac asked to show this phone's screen (from its widget). Mirroring needs the user's
- * consent on the phone, so this only asks: the app, or a notification, offers to start it.
+ * A paired Mac asked to show this phone's screen (from its widget). If the phone is ready for it
+ * ("Mirror Without Asking" kept the screen capture) and the Mac's owner confirmed with Touch ID,
+ * mirroring starts at once. Otherwise the phone's owner confirms here, with a fingerprint and
+ * Android's consent, as for any mirroring; with the setting on, that's needed only once.
  */
 object MirrorRequests {
     private const val NOTIFICATION_ID = 5
@@ -107,7 +109,11 @@ object MirrorRequests {
     /** The fingerprint of the Mac waiting to be mirrored to; the main screen starts consent for it. */
     val pending: StateFlow<String?> = _pending
 
-    fun request(context: Context, fingerprint: String, macName: String) {
+    fun request(context: Context, fingerprint: String, macName: String, ownerConfirmed: Boolean) {
+        if (ownerConfirmed && MirrorService.active.value == null) {
+            val peer = Graph.discovery.peers.value.firstOrNull { it.fingerprint == fingerprint }
+            if (peer != null && MirrorService.resume(peer)) return
+        }
         if (Links.appVisible) {
             _pending.value = fingerprint
             return

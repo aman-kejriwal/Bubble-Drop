@@ -80,4 +80,25 @@ fun OutputStream.writeJsonResponse(status: Int, json: JSONObject) {
     flush()
 }
 
+/** `200` with the raw bytes of [file] as the body. */
+fun OutputStream.writeFileResponse(file: java.io.File) {
+    val length = file.length()
+    val head = "HTTP/1.1 200 OK\r\n" +
+        "Content-Type: application/octet-stream\r\n" +
+        "Content-Length: $length\r\n" +
+        "Connection: close\r\n\r\n"
+    write(head.toByteArray(Charsets.UTF_8))
+    file.inputStream().use { input ->
+        val buffer = ByteArray(256 * 1024)
+        var remaining = length
+        while (remaining > 0) {
+            val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+            if (n < 0) throw IOException("${file.name} changed while sending")
+            write(buffer, 0, n)
+            remaining -= n
+        }
+    }
+    flush()
+}
+
 fun errorJson(message: String): JSONObject = JSONObject().put("error", message)

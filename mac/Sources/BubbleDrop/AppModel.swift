@@ -44,6 +44,7 @@ final class AppModel: ObservableObject {
             server?.receivingEnabled = receivingEnabled
             if receivingEnabled { armPairSuggestion() } else { withdrawPairSuggestion() }
             PhoneDashboard.shared.refresh()
+            FolderSync.shared.peersChanged()
         }
     }
 
@@ -131,6 +132,9 @@ final class AppModel: ObservableObject {
             server.statusHandler = { source, status in
                 await PhoneDashboard.shared.update(status, from: source)
             }
+            server.syncIndexHandler = { _ in await FolderSync.shared.index() }
+            server.syncFileHandler = { _, path in await FolderSync.shared.file(at: path) }
+            server.syncChangedHandler = { _ in await FolderSync.shared.peerChanged() }
             server.pairHandler = { request in
                 await AppModel.shared.confirmPairing(
                     peerName: request.sender.name,
@@ -155,6 +159,7 @@ final class AppModel: ObservableObject {
                 }
             }
             self.client = client
+            FolderSync.shared.start()
         } catch {
             startupError = "BubbleDrop couldn't start: \(error.localizedDescription)"
         }
@@ -195,6 +200,7 @@ final class AppModel: ObservableObject {
         }
         evaluatePairSuggestion()
         PhoneDashboard.shared.refresh()
+        FolderSync.shared.peersChanged()
     }
 
     // MARK: Pair suggestions
@@ -307,7 +313,8 @@ final class AppModel: ObservableObject {
     private func confirm(_ request: AskRequest) async -> Bool {
         answerOffer(false)
         let offer = IncomingOffer(senderName: request.sender.name, platform: request.sender.platform,
-                                  fileNames: request.files.map(\.name), totalBytes: request.totalSize)
+                                  fileNames: request.files.map(\.name), items: request.items,
+                                  totalBytes: request.totalSize)
         return await withCheckedContinuation { continuation in
             offerAnswer = continuation
             self.offer = offer
@@ -327,7 +334,8 @@ final class AppModel: ObservableObject {
     /// Accept, after Touch ID (or the login password) confirms it's the owner. Declining never asks.
     func acceptOffer() {
         guard let offer, !offer.accepted, offerAnswer != nil else { return }
-        let what = offer.fileNames.count == 1 ? "“\(offer.fileNames[0])”" : "\(offer.fileNames.count) files"
+        let what = offer.items.count == 1 ? "“\(describeOffer(offer.items))”"
+            : offer.fileNames.count == 1 ? "“\(offer.fileNames[0])”" : describeOffer(offer.items)
         Task {
             guard await OwnerAuth.confirm("accept \(what) from \(offer.senderName)") else { return }
             // Still the same offer, and not timed out meanwhile.
@@ -351,6 +359,17 @@ final class AppModel: ObservableObject {
         spotlightId = nil
         if offer == nil, shareFiles.isEmpty, shareLink == nil { DropPanel.shared.dismiss() }
     }
+
+    // MARK: Folder sync
+
+    /// The paired device, if it's nearby, and its pinned fingerprint.
+    var syncTarget: (Peer, String)? {
+        guard receivingEnabled, let fingerprint = trustedDevices.first?.fingerprint, trust?.isTrusted(fingerprint) == true,
+              let peer = peers.first(where: { $0.fingerprint == fingerprint }) else { return nil }
+        return (peer, fingerprint)
+    }
+
+    var syncClient: BubbleDropClient? { client }
 
     // MARK: Phone notifications
 
@@ -447,7 +466,7 @@ final class AppModel: ObservableObject {
         case .accepted(let id, let request):
             upsert(Transfer(id: id, direction: .incoming, peerName: request.sender.name,
                             peerPlatform: request.sender.platform,
-                            summary: describe(request.files.map(\.name)), totalBytes: request.totalSize,
+                            summary: request.summary, totalBytes: request.totalSize,
                             status: .active))
             offer = nil
             spotlightId = id
@@ -490,9 +509,9 @@ final class AppModel: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.prompt = "Send"
-        panel.message = "Choose files to send to \(peer.name)"
+        panel.message = "Choose files or folders to send to \(peer.name)"
         if panel.runModal() == .OK { send(panel.urls, to: peer) }
     }
 
@@ -517,8 +536,10 @@ final class AppModel: ObservableObject {
                         AppModel.shared.update(id) { transfer in
                             switch stage {
                             case .connecting, .pairing, .waitingForAccept: transfer.status = .waiting
-                            case .uploading(let sent, _):
+                            case .uploading(let sent, let total):
                                 transfer.status = .active
+                                // Folders are only counted up once their files are listed.
+                                transfer.totalBytes = total
                                 transfer.doneBytes = sent
                             case .done:
                                 transfer.status = .done

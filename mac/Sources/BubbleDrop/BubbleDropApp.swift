@@ -97,6 +97,8 @@ struct ContentView: View {
             if !model.trustedDevices.isEmpty {
                 Divider()
                 FromPhoneSection()
+                Divider()
+                FolderSyncSection()
             }
 
             if !model.trustedDevices.isEmpty {

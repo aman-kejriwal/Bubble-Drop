@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 import UniformTypeIdentifiers
@@ -37,7 +38,15 @@ public final class BubbleDropClient {
                      confirmPairing: ((PairingPrompt) async -> Bool)?,
                      progress: @escaping (SendStage) -> Void = { _ in }) async throws -> DeviceInfo {
         progress(.connecting)
-        let items = try files.map(Self.describe)
+        let described = try files.map(Self.describe)
+        let items = described.flatMap(\.items)
+        let emptyFolders = described.flatMap(\.emptyFolders)
+        guard items.count + emptyFolders.count > 0 else {
+            throw BubbleDropError.unsupportedItem("There's nothing to send in that folder.")
+        }
+        guard items.count <= 1000, emptyFolders.count <= 1000 else {
+            throw BubbleDropError.unsupportedItem("That's over 1,000 files; up to 1,000 can be sent at once.")
+        }
         let total = items.reduce(0) { $0 + $1.offer.size }
 
         let (receiver, serverFingerprint) = try await connectPaired(endpoint, confirmPairing: confirmPairing) {
@@ -45,7 +54,7 @@ public final class BubbleDropClient {
         }
 
         progress(.waitingForAccept)
-        let ask = AskRequest(sender: device, files: items.map(\.offer))
+        let ask = AskRequest(sender: device, files: items.map(\.offer), emptyFolders: emptyFolders)
         let (status, askData, _) = try await roundTrip(endpoint, pinned: serverFingerprint, path: "/api/v2/ask",
                                                        body: try JSONEncoder().encode(ask), timeout: 150,
                                                        allowErrorStatus: true)
@@ -218,6 +227,53 @@ public final class BubbleDropClient {
         trust.add(fingerprint: serverFingerprint, device: receiver)
     }
 
+    // MARK: Folder sync
+
+    /// The paired device's sync index, or nil if it has no sync folder.
+    public func syncIndex(from endpoint: NWEndpoint, pinned: String) async throws -> SyncIndex? {
+        let (status, data, _) = try await roundTrip(endpoint, pinned: pinned, path: "/api/v2/sync/index",
+                                                    body: Data("{}".utf8), timeout: 600, allowErrorStatus: true,
+                                                    limit: 64 << 20)
+        switch status {
+        case 200: return try JSONDecoder().decode(SyncIndex.self, from: data)
+        case 404: return nil
+        case 401: throw BubbleDropError.pairingRequired
+        case 503: throw BubbleDropError.receivingOff
+        default: throw BubbleDropError.http(status, Self.errorMessage(data))
+        }
+    }
+
+    /// Downloads [path] from the paired device's sync folder into [destination]; returns its SHA-256.
+    public func syncDownload(path: String, from endpoint: NWEndpoint, pinned: String,
+                             to destination: URL) async throws -> String {
+        let (wire, _) = try await connect(endpoint, pinned: pinned)
+        defer { wire.close() }
+        let body = try JSONEncoder().encode(SyncFileRequest(path: path))
+        wire.arm(60)
+        try await wire.send(requestHead(path: "/api/v2/sync/file", length: Int64(body.count),
+                                        contentType: "application/json") + body)
+        let head = try ResponseHead(try await wire.readHead())
+        guard let length = Int64(head.headers["content-length"] ?? ""), length >= 0 else {
+            throw BubbleDropError.badMessage("missing length")
+        }
+        guard head.status == 200 else {
+            let data = try await wire.readBody(length: Int(min(length, 1 << 20)))
+            throw head.status == 401 ? BubbleDropError.pairingRequired
+                : BubbleDropError.http(head.status, Self.errorMessage(data))
+        }
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw BubbleDropError.badMessage("can't write \(destination.lastPathComponent)")
+        }
+        let handle = try FileHandle(forWritingTo: destination)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        try await wire.streamBody(length: length) { chunk in
+            try handle.write(contentsOf: chunk)
+            hasher.update(data: chunk)
+        }
+        return hexString(hasher.finalize())
+    }
+
     // MARK: Helpers
 
     private struct Item {
@@ -225,16 +281,41 @@ public final class BubbleDropClient {
         var offer: FileOffer
     }
 
-    private static func describe(_ url: URL) throws -> Item {
-        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentTypeKey])
-        if values.isDirectory == true {
-            throw BubbleDropError.unsupportedItem("Folders aren't supported yet: \(url.lastPathComponent)")
+    /// A file, or every file in a folder plus the folders in it that hold no files (hidden files and
+    /// symlinks left out). An empty folder is sent as just its path; its parents are implied.
+    private static func describe(_ url: URL) throws -> (items: [Item], emptyFolders: [String]) {
+        let values = try url.resourceValues(forKeys: [.isDirectoryKey])
+        guard values.isDirectory == true else { return ([try describeFile(url, path: nil)], []) }
+        let root = url.standardizedFileURL
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
+        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys,
+                                                          options: [.skipsHiddenFiles]) else { return ([], []) }
+        var items: [Item] = []
+        var folders: [String] = [root.lastPathComponent]
+        for case let file as URL in walker {
+            let fileValues = try file.resourceValues(forKeys: Set(keys))
+            guard fileValues.isSymbolicLink != true else { continue }
+            let path = root.lastPathComponent + "/" + String(file.standardizedFileURL.path.dropFirst(root.path.count + 1))
+            if fileValues.isDirectory == true {
+                folders.append(path)
+            } else if fileValues.isRegularFile == true {
+                items.append(try describeFile(file, path: path))
+            }
+            if items.count > 1000 || folders.count > 1001 { break }
         }
+        // Only folders with nothing sent inside them; the rest are made by their contents.
+        let contents = items.compactMap(\.offer.path) + folders
+        let empty = folders.filter { folder in !contents.contains { $0.hasPrefix(folder + "/") } }
+        return (items, empty)
+    }
+
+    private static func describeFile(_ url: URL, path: String?) throws -> Item {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
         let mime = values.contentType?.preferredMIMEType
             ?? UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
             ?? "application/octet-stream"
-        return Item(url: url, offer: FileOffer(name: url.lastPathComponent,
-                                              size: Int64(values.fileSize ?? 0), mimeType: mime))
+        return Item(url: url, offer: FileOffer(name: url.lastPathComponent, size: Int64(values.fileSize ?? 0),
+                                              mimeType: mime, path: path))
     }
 
     private static func errorMessage(_ data: Data) -> String {
@@ -251,10 +332,10 @@ public final class BubbleDropClient {
         return Data(head.utf8)
     }
 
-    private func readResponse(_ wire: Wire) async throws -> (Int, Data) {
+    private func readResponse(_ wire: Wire, limit: Int = 1 << 20) async throws -> (Int, Data) {
         let head = try ResponseHead(try await wire.readHead())
         let length = Int(head.headers["content-length"] ?? "") ?? 0
-        return (head.status, try await wire.readBody(length: length))
+        return (head.status, try await wire.readBody(length: length, limit: limit))
     }
 
     private func connect(_ endpoint: NWEndpoint, pinned: String?) async throws -> (Wire, String) {
@@ -268,13 +349,14 @@ public final class BubbleDropClient {
     }
 
     private func roundTrip(_ endpoint: NWEndpoint, pinned: String?, path: String, body: Data,
-                           timeout: TimeInterval, allowErrorStatus: Bool = false) async throws -> (Int, Data, String) {
+                           timeout: TimeInterval, allowErrorStatus: Bool = false,
+                           limit: Int = 1 << 20) async throws -> (Int, Data, String) {
         let (wire, fingerprint) = try await connect(endpoint, pinned: pinned)
         defer { wire.close() }
         wire.arm(timeout)
         try await wire.send(requestHead(path: path, length: Int64(body.count),
                                         contentType: "application/json") + body)
-        let (status, data) = try await readResponse(wire)
+        let (status, data) = try await readResponse(wire, limit: limit)
         if !allowErrorStatus && status != 200 {
             throw status == 401 ? BubbleDropError.pairingRequired : BubbleDropError.http(status, Self.errorMessage(data))
         }

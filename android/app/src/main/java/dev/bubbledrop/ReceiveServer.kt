@@ -3,12 +3,14 @@ package dev.bubbledrop
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.File
 import java.io.IOException
 import java.net.ServerSocket
 import java.security.cert.X509Certificate
@@ -28,12 +30,16 @@ class ReceiveServer(
     private val prompts: Prompts,
     private val transfers: TransferRepository,
 ) {
-    private class Session(val client: String, offers: List<FileOffer>) {
+    private class Session(val client: String, offers: List<FileOffer>, emptyFolderTops: List<String>) {
+        /** The whole offer is one sent folder, so Open can show that folder. */
+        val singleFolder = (offers.map { it.folders.firstOrNull() } + emptyFolderTops).distinct().singleOrNull() != null
         val pending = ConcurrentHashMap(offers.associateBy { it.id })
         val totalBytes = offers.sumOf { it.size }
         var inFlight = 0
         var receivedBytes = 0L
         val saved = mutableListOf<Uri>()
+        /** Sent folder name → the name it's saved under (e.g. "Photos (1)" if "Photos" already existed). */
+        val folders = HashMap<String, String>()
         @Volatile var lastActivity = System.currentTimeMillis()
     }
 
@@ -86,6 +92,12 @@ class ReceiveServer(
             val request = HttpRequest.read(input)
             val paired = trust.isTrusted(peer)
             if (paired) trust.touch(peer)
+            // Folder sync: the file goes out as the raw body rather than JSON.
+            if (request.path == "/api/v2/sync/file" && request.method == "POST" && paired && receivingEnabled) {
+                val file = FolderSync.file(request.readJson().getString("path"))
+                if (file != null) output.writeFileResponse(file) else output.writeJsonResponse(404, errorJson("no such file"))
+                return@use
+            }
             val (status, body) = if (request.method != "POST") 404 to errorJson("not found") else when (request.path) {
                 "/api/v2/discover" -> {
                     request.readJson()
@@ -132,12 +144,23 @@ class ReceiveServer(
                     200 to JSONObject()
                 }
                 "/api/v2/mirror/request" -> if (!paired) PAIRING_REQUIRED else {
-                    request.readJson()
-                    MirrorRequests.request(context, peer, trust.device(peer)?.name ?: "your Mac")
+                    val ownerConfirmed = request.readJson().optBoolean("ownerConfirmed", false)
+                    MirrorRequests.request(context, peer, trust.device(peer)?.name ?: "your Mac", ownerConfirmed)
                     200 to JSONObject()
                 }
                 "/api/v2/notification/dismiss" -> if (!paired) PAIRING_REQUIRED else {
                     NotificationRelay.instance?.dismiss(request.readJson().getString("key"))
+                    200 to JSONObject()
+                }
+                "/api/v2/sync/index" -> if (!paired) PAIRING_REQUIRED else {
+                    request.readJson()
+                    if (!receivingEnabled) 503 to errorJson("receiving is off")
+                    else FolderSync.index()?.let { 200 to it.toJson() } ?: (404 to errorJson("folder sync is off"))
+                }
+                "/api/v2/sync/file" -> if (!paired) PAIRING_REQUIRED else 503 to errorJson("receiving is off")
+                "/api/v2/sync/changed" -> if (!paired) PAIRING_REQUIRED else {
+                    request.readJson()
+                    if (receivingEnabled) FolderSync.peerChanged()
                     200 to JSONObject()
                 }
                 "/api/v2/cancel" -> {
@@ -238,7 +261,8 @@ class ReceiveServer(
 
     private fun handleAsk(client: String, offer: AskRequest): Pair<Int, JSONObject> {
         if (!receivingEnabled) return 503 to errorJson("receiving is off")
-        if (offer.files.size !in 1..1000 || offer.files.any { it.size < 0 }) {
+        if (offer.files.size + offer.emptyFolders.size == 0 || offer.files.size > 1000 || offer.emptyFolders.size > 1000 ||
+            offer.files.any { it.size < 0 }) {
             return 400 to errorJson("invalid file list")
         }
         // Name the sender as it was paired, not as it currently claims to be.
@@ -249,15 +273,25 @@ class ReceiveServer(
         val now = System.currentTimeMillis()
         sessions.entries.removeIf { now - it.value.lastActivity > SESSION_EXPIRY_MS }
         val id = UUID.randomUUID().toString()
-        val session = Session(client, request.files)
+        val session = Session(client, request.files, request.emptyFolderComponents.map { it.first() })
         sessions[id] = session
         transfers.upsert(
             Transfer(
                 id = id, incoming = true, peerName = request.sender.name, peerPlatform = request.sender.platform,
-                summary = describeNames(request.files.map { it.name }),
+                summary = request.summary(),
                 totalBytes = session.totalBytes, status = Transfer.Status.Active,
             )
         )
+        // Empty folders are made right away, in the same place the folder's files will go.
+        for (folders in request.emptyFolderComponents) {
+            val path = relativePath(session, folders)
+            runCatching { makeFolder(path) }.onFailure { Log.w(TAG, "couldn't create $path", it) }
+            showFolder(id, session, path)
+        }
+        if (request.files.isEmpty()) {
+            sessions.remove(id)
+            transfers.update(id) { it.copy(status = Transfer.Status.Done) }
+        }
         return 200 to JSONObject().put("sessionId", id)
     }
 
@@ -278,7 +312,9 @@ class ReceiveServer(
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, sanitizeFileName(offer.name))
             put(MediaStore.Downloads.MIME_TYPE, offer.mimeType)
-            put(MediaStore.Downloads.RELATIVE_PATH, "Download/BubbleDrop")
+            put(MediaStore.Downloads.RELATIVE_PATH, relativePath(session, offer.folders).also { path ->
+                if (offer.folders.isNotEmpty()) showFolder(sessionId, session, path)
+            })
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
@@ -323,6 +359,48 @@ class ReceiveServer(
             transfers.update(sessionId) { it.copy(doneBytes = it.totalBytes, status = Transfer.Status.Done) }
         }
         return 200 to JSONObject()
+    }
+
+    /** What Open shows for this transfer: the sent folder, or Downloads/BubbleDrop if there's more. */
+    private fun showFolder(sessionId: String, session: Session, path: String) {
+        val shown = if (session.singleFolder) path.split('/').take(3).joinToString("/") else "Download/BubbleDrop"
+        transfers.update(sessionId) { it.copy(savedFolder = shown) }
+    }
+
+    /**
+     * Creates the folder at [relative] (e.g. "Download/BubbleDrop/Photos/Empty"). MediaStore only
+     * makes folders for files in them, so if this app may not create one directly, a placeholder
+     * file makes it and is then removed.
+     */
+    private fun makeFolder(relative: String) {
+        val dir = File(Environment.getExternalStorageDirectory(), relative)
+        if (dir.isDirectory || dir.mkdirs()) return
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, "bubbledrop-folder-${UUID.randomUUID()}")
+            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+            put(MediaStore.Downloads.RELATIVE_PATH, relative)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("can't create $relative")
+        resolver.openOutputStream(uri)?.close()
+        resolver.delete(uri, null, null)
+    }
+
+    /** Downloads/BubbleDrop, or the sent folder inside it for a file from one ([folders] outermost first). */
+    private fun relativePath(session: Session, folders: List<String>): String {
+        val top = folders.firstOrNull() ?: return "Download/BubbleDrop"
+        val saved = synchronized(session) {
+            session.folders.getOrPut(top) {
+                // A sent folder never merges into one already there.
+                val base = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BubbleDrop")
+                var name = top
+                var n = 1
+                while (File(base, name).exists()) name = "$top (${n++})"
+                name
+            }
+        }
+        return (listOf("Download/BubbleDrop", saved) + folders.drop(1)).joinToString("/")
     }
 
     private fun b64(bytes: ByteArray) = Base64.encodeToString(bytes, Base64.NO_WRAP)

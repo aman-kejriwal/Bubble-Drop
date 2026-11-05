@@ -1,5 +1,6 @@
 package dev.bubbledrop
 
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
@@ -23,8 +24,10 @@ import android.view.Display
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.IntentCompat
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -42,10 +45,25 @@ import kotlin.math.roundToInt
 /**
  * Mirrors this phone's screen to a paired Mac (PROTOCOL.md "Mirroring"): MediaProjection renders
  * into a hardware H.264 encoder, whose output streams over one long-lived TLS connection.
+ *
+ * With "Mirror Without Asking" on, the screen capture Android allowed outlives the session: when
+ * the Mac closes its window the service stays ready (Android's casting indicator stays up), and
+ * the Mac's next request, made after its owner's Touch ID, starts a new session with no prompt
+ * on the phone. Stopping it on the phone, or Android ending the capture, needs consent again.
  */
 class MirrorService : Service() {
+    /** The whole service is shutting down. */
     @Volatile private var stopping = false
+    /** The current session is ending; the service may stay ready for the next. */
+    @Volatile private var ending = false
+    private val displayLock = Any()
+    private var sessionRunning = false
     private var projection: MediaProjection? = null
+    /** Android allows one virtual display per capture, so it's kept (without a surface) between sessions. */
+    private var virtualDisplay: VirtualDisplay? = null
+    /** The certificate of the Mac the last session went to. */
+    @Volatile private var pinned: String? = null
+    private var trustWatch: Job? = null
     private var socket: SSLSocket? = null
     private var output: OutputStream? = null
     private val writeLock = Any()
@@ -54,15 +72,38 @@ class MirrorService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        // Unpairing the Mac, or turning "Mirror Without Asking" off, ends the wait for it.
+        trustWatch = Graph.scope.launch {
+            combine(Graph.trust.devices, _stayReady) { devices, stayReady ->
+                stayReady && devices.any { it.fingerprint == pinned }
+            }.collect { keep ->
+                if (!keep && _ready.value != null) Handler(Looper.getMainLooper()).post { shutDown() }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        trustWatch?.cancel()
+        if (instance === this) instance = null
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             shutDown()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_END_SESSION) {
+            endSession()
+            return START_NOT_STICKY
+        }
         val peer = pendingPeer
         val data = intent?.let { IntentCompat.getParcelableExtra(it, EXTRA_DATA, Intent::class.java) }
-        if (peer == null || data == null || _active.value != null) {
-            stopSelf()
+        if (peer == null || data == null || _active.value != null || projection != null) {
+            if (projection == null) stopSelf()
             return START_NOT_STICKY
         }
         pendingPeer = null
@@ -77,29 +118,64 @@ class MirrorService : Service() {
             return START_NOT_STICKY
         }
         this.projection = projection
+        // The casting indicator's Stop, or Android ending the capture: it can't be resumed.
         projection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() = shutDown()
         }, Handler(Looper.getMainLooper()))
+        startSession(peer)
+        return START_NOT_STICKY
+    }
 
+    /** Streams to [peer] with the capture already allowed. Main thread. */
+    private fun startSession(peer: Peer) {
+        val projection = projection ?: return
+        if (stopping || _active.value != null) return
+        synchronized(displayLock) { sessionRunning = true }
+        ending = false
         _active.value = peer.name
+        _ready.value = null
         _error.value = null
+        notifyForeground(notification(peer.name))
         thread(name = "mirror") {
             try {
                 stream(peer, projection)
             } catch (e: Exception) {
-                if (!stopping) {
+                if (!ending) {
                     Log.w(TAG, "mirroring failed", e)
                     _error.value = e.message ?: "Mirroring stopped"
                 }
             } finally {
-                Handler(Looper.getMainLooper()).post { shutDown() }
+                synchronized(displayLock) {
+                    sessionRunning = false
+                    if (stopping) releaseDisplay()
+                }
+                Handler(Looper.getMainLooper()).post { sessionEnded(peer.name) }
             }
         }
-        return START_NOT_STICKY
+    }
+
+    /** Ends the current session (its thread then calls [sessionEnded]). */
+    private fun endSession() {
+        if (ending) return
+        ending = true
+        runCatching { socket?.close() }
+    }
+
+    /** Waits for the Mac's next request if allowed, otherwise stops. Main thread. */
+    private fun sessionEnded(peerName: String) {
+        socket = null
+        output = null
+        _active.value = null
+        if (stopping) return
+        val keep = _stayReady.value && projection != null && pinned?.let(Graph.trust::isTrusted) == true
+        if (!keep) return shutDown()
+        _ready.value = peerName
+        notifyForeground(readyNotification(peerName))
     }
 
     private fun stream(peer: Peer, projection: MediaProjection) {
         val pinned = Graph.sender.connectPaired(peer)
+        this.pinned = pinned
         val socket = (Graph.identity.sslContext(PinningTrustManager(pinned)).socketFactory
             .createSocket(peer.address, peer.port) as SSLSocket)
         this.socket = socket
@@ -128,7 +204,7 @@ class MirrorService : Service() {
         watchWrites(peer.name)
         thread(name = "mirror-input") {
             runCatching { readControl(DataInputStream(input)) }
-            if (!stopping) Handler(Looper.getMainLooper()).post { shutDown() }
+            if (!ending) Handler(Looper.getMainLooper()).post { endSession() }
         }
         // Tell the Mac when remote control is switched on or off mid-session.
         val controlUpdates = Graph.scope.launch {
@@ -142,7 +218,7 @@ class MirrorService : Service() {
             Graph.trust.devices.collect { devices ->
                 if (devices.none { it.fingerprint == pinned }) {
                     Log.i(TAG, "${peer.name} was unpaired, stopping")
-                    Handler(Looper.getMainLooper()).post { shutDown() }
+                    Handler(Looper.getMainLooper()).post { endSession() }
                 }
             }
         }
@@ -189,13 +265,13 @@ class MirrorService : Service() {
      * take minutes to give up while the screen keeps being captured.
      */
     private fun watchWrites(peerName: String) = thread(name = "mirror-watchdog", isDaemon = true) {
-        while (!stopping) {
+        while (!ending) {
             Thread.sleep(1_000)
             val started = writeStartedAt
-            if (started != 0L && SystemClock.elapsedRealtime() - started > STALL_LIMIT_MS && !stopping) {
+            if (started != 0L && SystemClock.elapsedRealtime() - started > STALL_LIMIT_MS && !ending) {
                 Log.w(TAG, "connection to $peerName stalled, stopping")
                 _error.value = "Lost the connection to $peerName"
-                Handler(Looper.getMainLooper()).post { shutDown() }
+                Handler(Looper.getMainLooper()).post { endSession() }
                 return@thread
             }
         }
@@ -236,9 +312,8 @@ class MirrorService : Service() {
 
         fun run() {
             displays.registerDisplayListener(listener, Handler(Looper.getMainLooper()))
-            var virtualDisplay: VirtualDisplay? = null
             try {
-                while (!stopping) {
+                while (!ending) {
                     size = captureSize()
                     val codec = createCodec(size)
                     val surface = codec.createInputSurface()
@@ -257,7 +332,7 @@ class MirrorService : Service() {
                     try {
                         drain(codec)
                     } finally {
-                        virtualDisplay?.surface = null
+                        runCatching { virtualDisplay?.surface = null }
                         runCatching { codec.stop() }
                         codec.release()
                         surface.release()
@@ -266,13 +341,12 @@ class MirrorService : Service() {
                 writePacket(TYPE_END, 0, ByteArray(0))
             } finally {
                 displays.unregisterDisplayListener(listener)
-                virtualDisplay?.release()
             }
         }
 
         private fun drain(codec: MediaCodec) {
             val info = MediaCodec.BufferInfo()
-            while (!stopping && !restart) {
+            while (!ending && !restart) {
                 val index = codec.dequeueOutputBuffer(info, 20_000)
                 if (index < 0) continue
                 val buffer = codec.getOutputBuffer(index)
@@ -318,23 +392,47 @@ class MirrorService : Service() {
         }
     }
 
+    private fun notifyForeground(notification: android.app.Notification) {
+        runCatching { getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification) }
+    }
+
+    private fun readyNotification(peerName: String) = NotificationCompat.Builder(this, CHANNEL_SERVICE)
+        .setSmallIcon(android.R.drawable.ic_menu_slideshow)
+        .setContentTitle("Ready to mirror to $peerName")
+        .setContentText("$peerName can show this screen after its owner's Touch ID")
+        .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE))
+        .addAction(0, "Turn Off", PendingIntent.getService(this, 0,
+            Intent(this, MirrorService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE))
+        .setOngoing(true)
+        .build()
+
     private fun notification(peerName: String) = NotificationCompat.Builder(this, CHANNEL_SERVICE)
         .setSmallIcon(android.R.drawable.ic_menu_slideshow)
         .setContentTitle("Mirroring to $peerName")
         .setContentText("Your screen is visible on $peerName")
         .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE))
-        .addAction(0, "Stop", PendingIntent.getService(this, 0,
-            Intent(this, MirrorService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE))
+        .addAction(0, "Stop", PendingIntent.getService(this, 1,
+            Intent(this, MirrorService::class.java).setAction(ACTION_END_SESSION), PendingIntent.FLAG_IMMUTABLE))
         .setOngoing(true)
         .build()
+
+    private fun releaseDisplay() {
+        runCatching { virtualDisplay?.release() }
+        virtualDisplay = null
+    }
 
     private fun shutDown() {
         if (stopping) return
         stopping = true
+        ending = true
         runCatching { socket?.close() }
+        synchronized(displayLock) { if (!sessionRunning) releaseDisplay() }
         runCatching { projection?.stop() }
+        projection = null
         _active.value = null
+        _ready.value = null
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -343,6 +441,8 @@ class MirrorService : Service() {
         private const val TAG = "MirrorService"
         private const val NOTIFICATION_ID = 3
         private const val ACTION_STOP = "dev.bubbledrop.STOP_MIRROR"
+        private const val ACTION_END_SESSION = "dev.bubbledrop.END_MIRROR_SESSION"
+        private const val PREF_STAY_READY = "mirrorWithoutAsking"
         private const val EXTRA_CODE = "code"
         private const val EXTRA_DATA = "data"
         private const val MAX_EDGE = 1600
@@ -356,6 +456,36 @@ class MirrorService : Service() {
 
         /** Peers aren't parcelable; the one picked in the UI waits here for the service to start. */
         @Volatile private var pendingPeer: Peer? = null
+        @Volatile private var instance: MirrorService? = null
+
+        private val _ready = MutableStateFlow<String?>(null)
+        /** Name of the Mac a kept screen capture is waiting for, between sessions; or null. */
+        val ready: StateFlow<String?> = _ready
+
+        private val _stayReady = MutableStateFlow(false)
+        /** "Mirror Without Asking": keep the screen capture between sessions for the paired Mac. */
+        val stayReady: StateFlow<Boolean> = _stayReady
+
+        fun loadSettings(context: Context) {
+            _stayReady.value = context.getSharedPreferences("bubbledrop", Context.MODE_PRIVATE)
+                .getBoolean(PREF_STAY_READY, false)
+        }
+
+        fun setStayReady(context: Context, on: Boolean) {
+            context.getSharedPreferences("bubbledrop", Context.MODE_PRIVATE).edit().putBoolean(PREF_STAY_READY, on).apply()
+            _stayReady.value = on
+        }
+
+        /**
+         * Starts a session to [peer] on the kept screen capture, with no prompt. Returns false when
+         * there's none, and the caller has to ask for consent.
+         */
+        fun resume(peer: Peer): Boolean {
+            val service = instance ?: return false
+            if (_ready.value == null) return false
+            Handler(Looper.getMainLooper()).post { service.startSession(peer) }
+            return true
+        }
 
         private val _active = MutableStateFlow<String?>(null)
         /** Name of the device being mirrored to, or null. */
@@ -373,6 +503,12 @@ class MirrorService : Service() {
             )
         }
 
+        /** Ends the session being shown; stays ready for the next one if that's allowed. */
+        fun endSession(context: Context) {
+            context.startService(Intent(context, MirrorService::class.java).setAction(ACTION_END_SESSION))
+        }
+
+        /** Stops mirroring and any kept screen capture. */
         fun stop(context: Context) {
             context.startService(Intent(context, MirrorService::class.java).setAction(ACTION_STOP))
         }

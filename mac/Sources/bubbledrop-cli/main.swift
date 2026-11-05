@@ -8,6 +8,7 @@ import BubbleDropCore
 //   bubbledrop-cli browse
 //   bubbledrop-cli send [--state DIR] [--yes] <device-name | host:port> FILE...
 //   bubbledrop-cli paired [--state DIR] [--forget FINGERPRINT]
+//   bubbledrop-cli sync [--state DIR] --folder PATH <device-name | host:port>   (one folder-sync round)
 
 func usage() -> Never {
     print("""
@@ -16,6 +17,9 @@ func usage() -> Never {
            bubbledrop-cli send [--state DIR] [--yes] <device-name | host:port> FILE...
            bubbledrop-cli link [--state DIR] [--yes] <device-name | host:port> URL
            bubbledrop-cli paired [--state DIR] [--forget FINGERPRINT]
+           bubbledrop-cli sync [--state DIR] --folder PATH <device-name | host:port>
+    serve also takes --sync-folder PATH to offer that folder for folder sync, and with
+    --sync-with <host:port> it also syncs that folder with the paired device every 2 seconds.
     """)
     exit(2)
 }
@@ -104,6 +108,8 @@ case "serve":
     let port = UInt16(option("--port", in: &args) ?? "0") ?? 0
     let state = try State(directory: stateDir, name: option("--name", in: &args))
     let autoAccept = flag("--auto-accept", in: &args)
+    let syncFolder = option("--sync-folder", in: &args).map { URL(fileURLWithPath: $0, isDirectory: true) }
+    let syncWith = option("--sync-with", in: &args)
 
     let server = BubbleDropServer(device: state.device, identity: state.identity, trust: state.trust,
                               saveDirectory: dir)
@@ -113,6 +119,32 @@ case "serve":
         return ask("Does \(request.sender.name) show the same code?")
     }
     server.onPairingCancelled = { print("Pairing cancelled by the other device") }
+    if let syncFolder {
+        let engine = FolderSyncEngine(root: syncFolder, stateFile: stateDir.appendingPathComponent("sync-state.json"))
+        server.syncIndexHandler = { _ in try? engine.index() }
+        server.syncFileHandler = { _, path in engine.file(at: path) }
+        server.syncChangedHandler = { _ in print("The other device's sync folder changed") }
+        if let syncWith {
+            let endpoint = await resolve(syncWith)
+            let client = BubbleDropClient(device: state.device, identity: state.identity, trust: state.trust)
+            Task {
+                while true {
+                    do {
+                        let (_, pinned) = try await client.connectPaired(endpoint, confirmPairing: nil)
+                        if let result = try await client.syncRound(engine: engine, endpoint: endpoint, pinned: pinned,
+                                                                   deviceName: state.device.name),
+                           result.changes > 0 || !result.failures.isEmpty {
+                            print("Sync round: \(result.changes) change(s)" +
+                                  result.failures.map { "\n  failed: \($0)" }.joined())
+                        }
+                    } catch {
+                        print("Sync round failed: \(error.localizedDescription)")
+                    }
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+            }
+        }
+    }
     server.askHandler = { request in
         print("Offer from \(request.sender.name) (\(request.sender.platform)): " +
               "\(request.files.count) file(s), \(byteFormat.string(fromByteCount: request.totalSize))")
@@ -195,6 +227,28 @@ case "send":
         print("Delivered to \(receiver.name)")
     } catch {
         print("\nError: \(error.localizedDescription)")
+        exit(1)
+    }
+
+case "sync":
+    guard let folder = option("--folder", in: &args).map({ URL(fileURLWithPath: $0, isDirectory: true) }),
+          args.count == 1 else { usage() }
+    let endpoint = await resolve(args[0])
+    let state = try State(directory: stateDir, name: nil)
+    let client = BubbleDropClient(device: state.device, identity: state.identity, trust: state.trust)
+    let engine = FolderSyncEngine(root: folder, stateFile: stateDir.appendingPathComponent("sync-state.json"))
+    do {
+        let (_, pinned) = try await client.connectPaired(endpoint, confirmPairing: nil)
+        guard let result = try await client.syncRound(engine: engine, endpoint: endpoint, pinned: pinned,
+                                                      deviceName: state.device.name) else {
+            print("The other device has no sync folder.")
+            exit(1)
+        }
+        print("Synced with \"\(result.remoteFolder)\": \(result.changes) change(s) here" +
+              (result.retry ? ", more next round" : ""))
+        for failure in result.failures { print("  failed: \(failure)") }
+    } catch {
+        print("Error: \(error.localizedDescription)")
         exit(1)
     }
 

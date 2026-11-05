@@ -2,6 +2,7 @@ package dev.bubbledrop
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.util.Base64
 import org.json.JSONObject
@@ -55,8 +56,15 @@ class Sender(
         }
     }
 
+    /** Sends every file in the folder [tree] (from "Open folder"), keeping its structure. Blocking. */
+    fun sendFolder(peer: Peer, tree: Uri) = send(peer) { describeTree(tree) }
+
     /** Blocking; call from a background thread. */
-    fun send(peer: Peer, uris: List<Uri>) {
+    fun send(peer: Peer, uris: List<Uri>) = send(peer) { uris.map(::describe) to emptyList() }
+
+    /** [prepare] lists the files to send, and any empty folders in a sent folder. */
+    private fun send(peer: Peer, prepare: () -> Pair<List<Item>, List<String>>) {
+        var emptyFolders: List<String> = emptyList()
         val transferId = UUID.randomUUID().toString()
         var items: List<Item> = emptyList()
         transfers.upsert(
@@ -67,14 +75,19 @@ class Sender(
             )
         )
         try {
-            items = uris.map(::describe)
+            prepare().let { (files, folders) ->
+                items = files
+                emptyFolders = folders
+            }
+            if (items.isEmpty() && emptyFolders.isEmpty()) throw IOException("There's nothing to send in that folder.")
+            if (items.size > 1000 || emptyFolders.size > 1000) throw IOException("That's over 1,000 files; up to 1,000 can be sent at once.")
             val total = items.sumOf { it.offer.size }
             transfers.update(transferId) {
-                it.copy(summary = describeNames(items.map { item -> item.offer.name }), totalBytes = total)
+                it.copy(summary = AskRequest(device, items.map { item -> item.offer }, emptyFolders).summary(), totalBytes = total)
             }
 
             val pinned = connectPaired(peer)
-            val ask = AskRequest(device, items.map { it.offer })
+            val ask = AskRequest(device, items.map { it.offer }, emptyFolders)
             val response = postJson(peer, pinned, "/api/v2/ask", ask.toJson(), readTimeoutMs = 150_000)
             when (response.status) {
                 200 -> Unit
@@ -203,6 +216,105 @@ class Sender(
             403 -> throw IOException("${receiver.name} didn't confirm the code.")
             else -> throw IOException(confirm.json.optString("error", "Pairing failed (${confirm.status})"))
         }
+    }
+
+    // Folder sync
+
+    /** The paired device's sync index, or null if it has no sync folder. Blocking. */
+    fun syncIndex(peer: Peer, pinned: String): SyncIndex? {
+        // The other side may hash a whole folder before answering the first time.
+        val response = postJson(peer, pinned, "/api/v2/sync/index", JSONObject(), readTimeoutMs = 600_000)
+        return when (response.status) {
+            200 -> SyncIndex.fromJson(response.json)
+            404 -> null
+            401 -> throw IOException("${peer.name} no longer trusts this phone. Unpair it and pair again.")
+            503 -> throw IOException("${peer.name} has receiving turned off.")
+            else -> throw IOException(response.json.optString("error", "Sync failed (${response.status})"))
+        }
+    }
+
+    /** Downloads [path] from the paired device's sync folder into [dest]; returns its SHA-256. Blocking. */
+    fun syncDownload(peer: Peer, pinned: String, path: String, dest: File): String {
+        val (conn, _) = open(peer, pinned, "/api/v2/sync/file")
+        try {
+            val bytes = JSONObject().put("path", path).toString().toByteArray(Charsets.UTF_8)
+            conn.requestMethod = "POST"
+            conn.readTimeout = 60_000
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setFixedLengthStreamingMode(bytes.size)
+            conn.outputStream.use { it.write(bytes) }
+            val status = conn.responseCode
+            if (status != 200) {
+                val text = conn.errorStream?.use { String(it.readBytes(), Charsets.UTF_8) }.orEmpty()
+                throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("Download failed ($status)"))
+            }
+            val length = conn.contentLengthLong
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            var written = 0L
+            conn.inputStream.use { input ->
+                dest.outputStream().use { out ->
+                    val buffer = ByteArray(256 * 1024)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        out.write(buffer, 0, n)
+                        digest.update(buffer, 0, n)
+                        written += n
+                    }
+                }
+            }
+            if (length >= 0 && written != length) throw IOException("download truncated")
+            return digest.digest().toHex()
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Every file in a picked folder, by its path from that folder, plus the folders in it that hold no
+     * files (an empty folder's parents are implied). Hidden files are left out.
+     */
+    private fun describeTree(tree: Uri): Pair<List<Item>, List<String>> {
+        val resolver = context.contentResolver
+        val rootId = DocumentsContract.getTreeDocumentId(tree)
+        val columns = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE,
+        )
+        val rootName = resolver.query(DocumentsContract.buildDocumentUriUsingTree(tree, rootId), columns, null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(1) else null } ?: "Folder"
+        val items = mutableListOf<Item>()
+        val emptyFolders = mutableListOf<String>()
+        /** Returns whether anything inside [id] is sent. */
+        fun walk(id: String, prefix: String): Boolean {
+            var holdsSomething = false
+            resolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, id), columns, null, null, null)?.use { c ->
+                while (c.moveToNext() && items.size <= 1000 && emptyFolders.size <= 1000) {
+                    val childId = c.getString(0)
+                    val name = c.getString(1) ?: continue
+                    if (name.startsWith(".")) continue
+                    val mime = c.getString(2) ?: "application/octet-stream"
+                    holdsSomething = true
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        if (!walk(childId, "$prefix$name/")) emptyFolders += "$prefix$name"
+                    } else {
+                        val uri = DocumentsContract.buildDocumentUriUsingTree(tree, childId)
+                        val size = if (c.isNull(3)) null else c.getLong(3)
+                        items += if (size != null && size >= 0) {
+                            Item(FileOffer(UUID.randomUUID().toString(), name, size, mime, path = "$prefix$name"),
+                                open = { resolver.openInputStream(uri) ?: throw IOException("Can't read $name") })
+                        } else {
+                            describe(uri).let { Item(it.offer.copy(path = "$prefix$name"), it.open, it.cleanup) }
+                        }
+                    }
+                }
+            }
+            return holdsSomething
+        }
+        val top = sanitizeFileName(rootName)
+        if (!walk(rootId, "$top/")) emptyFolders += top
+        return items to emptyFolders
     }
 
     private fun describe(uri: Uri): Item {
