@@ -243,13 +243,13 @@ private struct ConnectionLabel: View {
 
     var body: some View {
         if entry.connected {
-            Label("Connected", systemImage: "paperplane.circle.fill")
+            Label("Connected", systemImage: "drop.circle.fill")
                 .foregroundStyle(.green)
         } else if let at = entry.snapshot?.statusAt {
-            Label { Text("Seen \(at, style: .relative) ago") } icon: { Image(systemName: "paperplane.circle") }
+            Label { Text("Seen \(at, style: .relative) ago") } icon: { Image(systemName: "drop.circle") }
                 .foregroundStyle(.secondary)
         } else {
-            Label("Not connected", systemImage: "paperplane.circle")
+            Label("Not connected", systemImage: "drop.circle")
                 .foregroundStyle(.secondary)
         }
     }
@@ -318,7 +318,7 @@ private struct SmallView: View {
             HStack(alignment: .top) {
                 BatteryRing(device: .phone(name, status), size: 56)
                 Spacer(minLength: 0)
-                Image(systemName: entry.connected ? "paperplane.circle.fill" : "paperplane.circle")
+                Image(systemName: entry.connected ? "drop.circle.fill" : "drop.circle")
                     .font(.title3)
                     .foregroundStyle(entry.connected ? Color.green : Color.secondary)
             }
@@ -382,7 +382,7 @@ private struct LargeView: View {
             Divider()
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                 GridRow {
-                    Detail(symbol: entry.connected ? "paperplane.circle.fill" : "paperplane.circle", title: "BubbleDrop",
+                    Detail(symbol: entry.connected ? "drop.circle.fill" : "drop.circle", title: "BubbleDrop",
                            value: connectionText(entry), tint: entry.connected ? .green : nil)
                     Detail(symbol: status.wifi ? "wifi" : "wifi.slash", title: "Wi-Fi",
                            value: Text(status.wifi ? (status.wifiName ?? "Connected") : "Off"),

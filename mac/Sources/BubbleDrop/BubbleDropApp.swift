@@ -9,7 +9,7 @@ struct BubbleDropApp: App {
     @ObservedObject private var model = AppModel.shared
 
     var body: some Scene {
-        MenuBarExtra("BubbleDrop", systemImage: "paperplane.circle.fill") {
+        MenuBarExtra("BubbleDrop", systemImage: "drop.fill") {
             ContentView()
                 .environmentObject(model)
         }

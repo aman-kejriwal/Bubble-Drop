@@ -29,7 +29,7 @@ swiftc "${FLAGS[@]}" -parse-as-library -module-name BubbleDrop -I "$OUT" -L "$OU
   Sources/BubbleDrop/*.swift -o "$APP/Contents/MacOS/BubbleDrop"
 cp Info.plist "$APP/Contents/Info.plist"
 
-if [[ ! -f "$OUT/AppIcon.icns" ]]; then
+if [[ ! -f "$OUT/AppIcon.icns" || make-icon.swift -nt "$OUT/AppIcon.icns" ]]; then
   echo "› AppIcon"
   ICONSET="$OUT/AppIcon.iconset"
   mkdir -p "$ICONSET"
