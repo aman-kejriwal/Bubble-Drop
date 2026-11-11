@@ -34,8 +34,8 @@ final class PhoneCalls: ObservableObject {
     private static let ringtoneKey = "ringtone"
     /// The phone re-sends a live call every 5 s; this long without word means the call (or the phone) is gone.
     private static let staleAfter: TimeInterval = 15
-    private var ringtone: NSSound?
-    private var preview: NSSound?
+    private var ringtone: RingtonePlayer?
+    private var preview: RingtonePlayer?
     private var previewStop: DispatchWorkItem?
     private var ringTimer: Timer?
     private var staleTimer: Timer?
@@ -126,18 +126,22 @@ final class PhoneCalls: ObservableObject {
             : ringtone
     }
 
-    private static func sound(named name: String) -> NSSound? {
-        NSSound(contentsOf: ringtonesDirectory.appendingPathComponent(name + ".m4r"), byReference: true)
-            ?? NSSound(contentsOf: ringtonesDirectory.appendingPathComponent(defaultRingtone + ".m4r"), byReference: true)
+    /// The file for a ringtone name, or the default ringtone if that one is missing.
+    private static func ringtoneURL(named name: String) -> URL? {
+        let file = ringtonesDirectory.appendingPathComponent(name + ".m4r")
+        if FileManager.default.fileExists(atPath: file.path) { return file }
+        let fallback = ringtonesDirectory.appendingPathComponent(defaultRingtone + ".m4r")
+        return FileManager.default.fileExists(atPath: fallback.path) ? fallback : nil
     }
 
     /// Plays the first few seconds of the chosen ringtone, so picking one lets you hear it.
     private func previewRingtone() {
         preview?.stop()
         previewStop?.cancel()
-        guard ringtone == nil, ringtoneName != Self.silentRingtone, let sound = Self.sound(named: ringtoneName) else { return }
-        sound.play()
-        preview = sound
+        guard ringtone == nil, ringtoneName != Self.silentRingtone, let url = Self.ringtoneURL(named: ringtoneName) else { return }
+        let player = RingtonePlayer()
+        player.play(url, loops: false)
+        preview = player
         let stop = DispatchWorkItem { [weak self] in
             self?.preview?.stop()
             self?.preview = nil
@@ -149,11 +153,12 @@ final class PhoneCalls: ObservableObject {
     private func startRinging() {
         guard ringtone == nil, ringTimer == nil, ringtoneName != Self.silentRingtone else { return }
         preview?.stop()
-        if let sound = Self.sound(named: ringtoneName) {
-            sound.loops = true
-            sound.play()
-            ringtone = sound
-            return
+        if let url = Self.ringtoneURL(named: ringtoneName) {
+            let player = RingtonePlayer()
+            if player.play(url, loops: true) {
+                ringtone = player
+                return
+            }
         }
         // The ringtone lives in a private framework; fall back to an alert sound if it ever moves.
         let ring = { _ = NSSound(named: "Submarine")?.play() }

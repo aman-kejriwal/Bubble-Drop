@@ -87,7 +87,10 @@ class Discovery(context: Context, private val device: DeviceInfo, private val fi
         registration = null
         discovery = null
         _peers.value = emptyList()
-        synchronized(resolveQueue) { resolveQueue.clear() }
+        synchronized(resolveQueue) {
+            resolveQueue.clear()
+            resolving = false
+        }
     }
 
     private fun enqueueResolve(info: NsdServiceInfo) {

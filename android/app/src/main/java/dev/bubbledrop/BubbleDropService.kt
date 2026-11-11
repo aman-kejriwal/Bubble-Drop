@@ -63,13 +63,17 @@ class BubbleDropService : Service() {
 
     override fun onDestroy() {
         // Mirroring runs in its own service and connection; turning BubbleDrop off must end it too.
-        if (MirrorService.active.value != null) MirrorService.stop(this)
-        PhoneStatusReporter.stop()
-        FolderSync.stop()
-        Graph.pairSuggestions.disarm()
-        Graph.discovery.stop()
-        Graph.server.stop()
-        multicastLock?.release()
+        // Each step is guarded: a throw here would crash the process, and START_STICKY would then
+        // bring the service straight back, so BubbleDrop could never be turned off.
+        fun step(name: String, block: () -> Unit) =
+            runCatching(block).onFailure { Log.e("BubbleDropService", "stop: $name failed", it) }
+        step("mirror") { if (MirrorService.active.value != null) MirrorService.stop(this) }
+        step("status") { PhoneStatusReporter.stop() }
+        step("folder sync") { FolderSync.stop() }
+        step("pair suggestions") { Graph.pairSuggestions.disarm() }
+        step("discovery") { Graph.discovery.stop() }
+        step("server") { Graph.server.stop() }
+        step("multicast") { multicastLock?.release() }
         _running.value = false
         super.onDestroy()
     }

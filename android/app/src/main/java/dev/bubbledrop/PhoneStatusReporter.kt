@@ -144,8 +144,11 @@ object PhoneStatusReporter {
         runCatching { app.unregisterReceiver(changed) }
         runCatching { app.getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(network) }
         val adapter = app.getSystemService(BluetoothManager::class.java)?.adapter
-        profiles.forEach { (id, proxy) -> runCatching { adapter?.closeProfileProxy(id, proxy) } }
+        // closeProfileProxy calls onServiceDisconnected synchronously, which removes from `profiles`;
+        // iterating the live map would throw ConcurrentModificationException and crash turn-off.
+        val open = profiles.toMap()
         profiles.clear()
+        open.forEach { (id, proxy) -> runCatching { adapter?.closeProfileProxy(id, proxy) } }
         lastSent = null
     }
 

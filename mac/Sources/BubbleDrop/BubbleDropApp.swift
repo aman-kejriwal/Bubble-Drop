@@ -54,6 +54,8 @@ struct ContentView: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
             }
+            .padding(10)
+            .liquidGlass(cornerRadius: 14)
 
             if let error = model.startupError {
                 Text(error).font(.caption).foregroundStyle(.red)
@@ -134,8 +136,10 @@ struct ContentView: View {
             .buttonStyle(.borderless)
             .font(.caption)
         }
+        .liquidGlassGroup()
         .padding(14)
         .frame(width: 320)
+        .background(LiquidBackdrop())
     }
 }
 
@@ -218,7 +222,7 @@ struct PairSuggestionCard: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12)))
+        .liquidGlass(cornerRadius: 12, tint: Color.accentColor.opacity(0.2))
     }
 }
 
@@ -259,8 +263,7 @@ struct PeerRow: View {
                           || (!paired && !model.canPair(peer)))
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8)
-            .fill(isTargeted ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.05)))
+        .liquidGlass(cornerRadius: 12, tint: isTargeted ? Color.accentColor.opacity(0.35) : nil, interactive: true)
         .onDrop(of: [UTType.fileURL], isTargeted: $isTargeted) { providers in
             guard paired || model.canPair(peer) else { return false }
             loadFileURLs(providers) { urls in model.send(urls, to: peer) }
