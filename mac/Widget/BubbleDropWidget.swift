@@ -10,43 +10,6 @@ import BubbleDropCore
 struct BubbleDropWidgets: WidgetBundle {
     var body: some Widget {
         PhoneWidget()
-        GlassTestA()
-        GlassTestB()
-        GlassTestC()
-    }
-}
-
-// TEMPORARY: three background variants to find which one gets the system's Liquid Glass.
-struct GlassTestA: Widget {
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "dev.bubbledrop.glasstest.A", provider: Provider()) { entry in
-            PhoneWidgetView(entry: entry).containerBackground(.background, for: .widget)
-        }
-        .configurationDisplayName("Glass Test A")
-        .description("Semantic background")
-        .supportedFamilies([.systemMedium])
-    }
-}
-
-struct GlassTestB: Widget {
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "dev.bubbledrop.glasstest.B", provider: Provider()) { entry in
-            PhoneWidgetView(entry: entry)
-        }
-        .configurationDisplayName("Glass Test B")
-        .description("No container background")
-        .supportedFamilies([.systemMedium])
-    }
-}
-
-struct GlassTestC: Widget {
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "dev.bubbledrop.glasstest.C", provider: Provider()) { entry in
-            PhoneWidgetView(entry: entry).containerBackground(for: .widget) { Color.clear }
-        }
-        .configurationDisplayName("Glass Test C")
-        .description("Clear background")
-        .supportedFamilies([.systemMedium])
     }
 }
 
@@ -54,13 +17,40 @@ struct PhoneWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "dev.bubbledrop.phone", provider: Provider()) { entry in
             PhoneWidgetView(entry: entry)
-                // Clear, like Apple's own widgets: the system draws its Liquid Glass platter behind
-                // the widget, and any fill here would cover it with a flat panel.
-                .containerBackground(for: .widget) { Color.clear }
+                // In the Clear and Tinted widget styles macOS removes this background and draws its
+                // own Liquid Glass. In Default/Dark it draws nothing, so this is our own glass look.
+                .containerBackground(for: .widget) { WidgetGlassBackground() }
         }
         .configurationDisplayName("Phone")
         .description("Your phone's battery, accessories and connection to this Mac.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+/// Liquid-Glass-style panel for the Default and Dark widget styles: a translucent material the
+/// wallpaper shows through, a light sheen from the top-left, and bright refracted edges.
+struct WidgetGlassBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let dark = colorScheme == .dark
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            // Faint tint so text stays readable over busy wallpapers.
+            Rectangle().fill(dark ? Color.black.opacity(0.18) : Color.white.opacity(0.22))
+            // Sheen: light catching the top-left of the glass.
+            LinearGradient(stops: [.init(color: .white.opacity(dark ? 0.16 : 0.35), location: 0),
+                                   .init(color: .white.opacity(0), location: 0.45),
+                                   .init(color: .white.opacity(dark ? 0.04 : 0.08), location: 1)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            // Edge highlight, brighter at top-left and bottom-right like Apple's glass rims.
+            ContainerRelativeShape()
+                .strokeBorder(LinearGradient(colors: [.white.opacity(dark ? 0.45 : 0.8),
+                                                      .white.opacity(0.05),
+                                                      .white.opacity(dark ? 0.25 : 0.5)],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing),
+                              lineWidth: 1)
+        }
     }
 }
 
