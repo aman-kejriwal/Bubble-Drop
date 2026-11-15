@@ -147,6 +147,7 @@ struct ContentView: View {
 struct FromPhoneSection: View {
     @ObservedObject private var phone = PhoneNotifications.shared
     @ObservedObject private var calls = PhoneCalls.shared
+    @ObservedObject private var trackpad = PhoneTrackpad.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -162,6 +163,19 @@ struct FromPhoneSection: View {
             }
             .pickerStyle(.menu)
             .disabled(!phone.showCalls)
+            Toggle("Use phone as trackpad", isOn: $trackpad.enabled)
+            if trackpad.enabled && !trackpad.accessGranted {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Allow BubbleDrop under Accessibility so it can move the pointer.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Button("Open Settings") { trackpad.openAccessibilitySettings() }
+                        .buttonStyle(.link)
+                }
+            } else if let name = trackpad.activeName {
+                Text("\(name) is controlling the pointer").foregroundStyle(.green)
+            }
             if !phone.knownApps.isEmpty {
                 DisclosureGroup("Apps (\(phone.knownApps.count))") {
                     ScrollView {
@@ -182,6 +196,7 @@ struct FromPhoneSection: View {
         .toggleStyle(.switch)
         .controlSize(.small)
         .font(.caption)
+        .onAppear { trackpad.refreshAccess() }
     }
 }
 

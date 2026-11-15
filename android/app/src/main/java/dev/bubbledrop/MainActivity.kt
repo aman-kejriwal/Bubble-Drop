@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mouse
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.PriorityHigh
+import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -118,10 +119,13 @@ class MainActivity : ComponentActivity() {
                     if (needed.isEmpty()) BubbleDropService.start(this@MainActivity)
                     else permissions.launch(needed.toTypedArray())
                 }
-                MainScreen(sharedUris = sharedUris, sharedLink = sharedLink, onClearShared = {
-                    sharedUris = emptyList()
-                    sharedLink = null
-                })
+                Box(Modifier.fillMaxSize()) {
+                    MainScreen(sharedUris = sharedUris, sharedLink = sharedLink, onClearShared = {
+                        sharedUris = emptyList()
+                        sharedLink = null
+                    })
+                    TrackpadOverlay()
+                }
             }
         }
     }
@@ -136,6 +140,12 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         Links.appVisible = false
         super.onPause()
+    }
+
+    override fun onStop() {
+        // The trackpad only works with its screen open (a rotation reopens it right away).
+        if (!isChangingConfigurations) Trackpad.close()
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -441,6 +451,25 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
 
             if (sharing) {
                 item(key = "hero") { HeroSection(running) }
+            }
+
+            // A paired Mac that's nearby can be driven from this screen.
+            nearby.firstOrNull { p -> p.platform == "macos" && trusted.any { it.fingerprint == p.fingerprint } }?.let { mac ->
+                item(key = "trackpad") {
+                    GroupedSection(
+                        header = "Trackpad",
+                        footer = "Move ${mac.name}'s pointer, click and scroll from this phone. " +
+                            "Turn on \"Use phone as trackpad\" in BubbleDrop on the Mac first.",
+                    ) {
+                        ListRow(
+                            title = "Use as Trackpad",
+                            subtitle = mac.name,
+                            leading = { IconTile(Icons.Rounded.TouchApp, ios.teal) },
+                            chevron = true,
+                            onClick = { Trackpad.open(mac) },
+                        )
+                    }
+                }
             }
 
             item(key = "mac") {

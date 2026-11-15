@@ -123,6 +123,10 @@ final class AppModel: ObservableObject {
             server.mirrorHandler = { sender, stream in
                 await MirrorViewer.run(sender: sender, stream: stream)
             }
+            server.trackpadRefusal = { PhoneTrackpad.refusal() }
+            server.trackpadHandler = { sender, stream in
+                await PhoneTrackpad.run(sender: sender, stream: stream)
+            }
             server.notificationHandler = { source, event in
                 await PhoneNotifications.shared.handle(event, from: source)
             }
@@ -163,6 +167,11 @@ final class AppModel: ObservableObject {
         } catch {
             startupError = "BubbleDrop couldn't start: \(error.localizedDescription)"
         }
+    }
+
+    /// Stops a phone being used as this Mac's trackpad.
+    func endTrackpad() {
+        server?.endTrackpad()
     }
 
     func isPaired(_ peer: Peer) -> Bool {

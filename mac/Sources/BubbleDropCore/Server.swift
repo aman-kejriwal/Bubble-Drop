@@ -24,7 +24,12 @@ public final class BubbleDropServer {
     public var saveDirectory: URL
     public var receivingEnabled = true {
         // Turning receiving off also ends a screen already being shown, not just new ones.
-        didSet { if !receivingEnabled { locked { mirrorStream }?.close() } }
+        didSet {
+            guard !receivingEnabled else { return }
+            let (mirror, trackpad) = locked { (mirrorStream, trackpadStream) }
+            mirror?.close()
+            trackpad?.close()
+        }
     }
     /// Decide whether to accept an offer from a paired device. Times out after 120 s.
     public var askHandler: (AskRequest) async -> Bool = { _ in false }
@@ -32,6 +37,10 @@ public final class BubbleDropServer {
     public var linkHandler: (DeviceInfo, URL) async -> Bool = { _, _ in false }
     /// Shows a paired device's screen; returns when the viewer is closed or the stream ends.
     public var mirrorHandler: (DeviceInfo, MirrorStream) async -> Void = { _, _ in }
+    /// Moves this Mac's pointer for a paired phone; returns when the phone stops or the stream is closed.
+    public var trackpadHandler: (DeviceInfo, TrackpadStream) async -> Void = { _, _ in }
+    /// Why a phone can't be this Mac's trackpad right now (shown on the phone), or nil if it can.
+    public var trackpadRefusal: () -> String? = { "This Mac doesn't accept a trackpad." }
     /// A paired phone posted or removed a notification.
     public var notificationHandler: (PhoneSource, NotifyEvent) async -> Void = { _, _ in }
     /// A paired phone's call rang, connected or ended.
@@ -48,6 +57,9 @@ public final class BubbleDropServer {
     /// The screen being shown right now and who sends it, so turning receiving off or unpairing can end it.
     private var mirrorStream: MirrorStream?
     private var mirrorClient: String?
+    /// The phone acting as this Mac's trackpad right now, so the same events can end it.
+    private var trackpadStream: TrackpadStream?
+    private var trackpadClient: String?
     /// Show the pairing code and ask the user to confirm it matches. Times out after 120 s.
     public var pairHandler: (PairingRequest) async -> Bool = { _ in false }
     /// The other device abandoned pairing; dismiss any code prompt.
@@ -180,6 +192,10 @@ public final class BubbleDropServer {
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))
                 try await handleMirror(try JSONDecoder().decode(MirrorRequest.self, from: body), client, wire)
+            case "/api/v2/trackpad":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                let body = try await wire.readBody(length: Int(head.contentLength))
+                try await handleTrackpad(try JSONDecoder().decode(TrackpadRequest.self, from: body), client, wire)
             case "/api/v2/sync/index":
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 _ = try await wire.readBody(length: Int(head.contentLength))
@@ -263,10 +279,50 @@ public final class BubbleDropServer {
         await mirrorHandler(sender, stream)
     }
 
-    /// Ends the screen being shown if its sender is no longer paired. Call after unpairing.
+    /// Ends the screen being shown, and the phone used as a trackpad, if that device is no longer
+    /// paired. Call after unpairing.
     public func endUntrustedMirroring() {
         let (stream, client) = locked { (mirrorStream, mirrorClient) }
         if let stream, let client, !trust.isTrusted(client) { stream.close() }
+        let (trackpad, trackpadOwner) = locked { (trackpadStream, trackpadClient) }
+        if let trackpad, let trackpadOwner, !trust.isTrusted(trackpadOwner) { trackpad.close() }
+    }
+
+    private func handleTrackpad(_ request: TrackpadRequest, _ client: String, _ wire: Wire) async throws {
+        guard receivingEnabled else {
+            return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
+        }
+        if let reason = trackpadRefusal() {
+            return try await wire.sendResponse(status: 403, json: ErrorBody(error: reason))
+        }
+        var sender = request.sender
+        if let known = trust.device(for: client) { sender.name = known.name }
+        try await wire.sendResponse(status: 200, json: EmptyBody(), final: false)
+        let stream = TrackpadStream(wire)
+        // A phone that reconnects (say after a Wi-Fi blip) takes over from its stale session.
+        let previous: TrackpadStream? = locked {
+            let old = trackpadStream
+            trackpadStream = stream
+            trackpadClient = client
+            return old
+        }
+        previous?.close()
+        defer {
+            stream.close()
+            locked {
+                if trackpadStream === stream {
+                    trackpadStream = nil
+                    trackpadClient = nil
+                }
+            }
+        }
+        if !receivingEnabled || !trust.isTrusted(client) { stream.close() }
+        await trackpadHandler(sender, stream)
+    }
+
+    /// Stops the phone being used as a trackpad, e.g. when the setting is turned off.
+    public func endTrackpad() {
+        locked { trackpadStream }?.close()
     }
 
     private func sendPairingRequired(_ wire: Wire) async throws {

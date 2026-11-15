@@ -100,7 +100,10 @@ public final class TLSIdentity {
             let leaf = (SecTrustCopyCertificateChain(secTrust) as? [SecCertificate])?.first
             complete(leaf.map(certificateFingerprint) == pinnedPeer)
         }, .global())
-        return NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        // Input events (remote control, trackpad) are tiny; don't let them wait to be batched.
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true
+        return NWParameters(tls: tls, tcp: tcp)
     }
 }
 

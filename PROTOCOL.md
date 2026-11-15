@@ -199,6 +199,49 @@ Senders keep frames coming while the screen is idle; receivers drop the stream a
 silence. One mirror session at a time: `409` if the receiver is already showing a screen, `503`
 if receiving is off.
 
+## Trackpad
+
+### `POST /api/v2/trackpad` (phone → Mac, paired clients only)
+Body: `{ "sender": DeviceInfo }`. Makes the phone the Mac's trackpad. Like `/mirror`, the Mac
+answers `200 {}` **without** `Connection: close` and keeps the connection open; the phone then
+streams packets on it until either side closes the connection.
+
+| status | meaning                                                                          |
+|--------|----------------------------------------------------------------------------------|
+| 403    | the Mac's user hasn't turned the trackpad on, or macOS hasn't allowed BubbleDrop to control the pointer (Accessibility); `error` says which, in words the phone shows as they are |
+| 503    | receiving is turned off                                                          |
+
+Each packet is a 3-byte big-endian header followed by the payload:
+
+| bytes | field                      |
+|-------|----------------------------|
+| 1     | type (see below)           |
+| 2     | payload length (≤ 1024)    |
+
+| type | payload                                   | meaning                                         |
+|------|-------------------------------------------|-------------------------------------------------|
+| `0`  | none                                      | keepalive                                       |
+| `1`  | `dx`, `dy`: two big-endian float32        | one finger moved; move the pointer              |
+| `2`  | button (`0` left, `1` right), down (`1`/`0`), click count (1–3) | a button went down or up      |
+| `3`  | `dx`, `dy`: two big-endian float32        | two fingers moved; scroll                       |
+| `4`  | direction: `0` left, `1` right, `2` up, `3` down | three fingers swiped that way; sent once per swipe |
+
+Distances are in the phone's density-independent pixels (160 per inch), y down. The Mac turns
+them into pointer movement (speeding up fast swipes) and scrolling in the direction of its own
+"Natural scrolling" setting. The phone counts clicks: the second tap of a double tap is sent with
+click count 2. A three-finger swipe does what it does on the Mac's own trackpad: left and right
+switch spaces and full-screen apps (fingers moving left bring in the one on the right), up opens
+Mission Control and down shows the front app's windows. The Mac does this by pressing the
+Mission Control keyboard shortcuts (Control + arrow keys), so they must be left on in System
+Settings → Keyboard → Keyboard Shortcuts. Unknown types are skipped, so newer phones can send more.
+
+Both sides send a keepalive at least every 2 seconds when they have nothing else to send (the
+Mac sends nothing but keepalives). The Mac ends a session that's silent for 10 seconds, the phone
+after 8, so neither waits on a device that dropped off the network. When a session ends the Mac
+releases any button the phone was holding. A new request from the paired phone replaces its
+earlier session. Unpairing, or turning receiving or the trackpad setting off on the Mac, ends the
+session at once.
+
 ## Notifications
 
 A phone with Notification access forwards its notifications to the paired Macs it can see. All
