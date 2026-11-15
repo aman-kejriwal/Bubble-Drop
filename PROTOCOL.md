@@ -225,6 +225,8 @@ Each packet is a 3-byte big-endian header followed by the payload:
 | `2`  | button (`0` left, `1` right), down (`1`/`0`), click count (1–3) | a button went down or up      |
 | `3`  | `dx`, `dy`: two big-endian float32        | two fingers moved; scroll                       |
 | `4`  | direction: `0` left, `1` right, `2` up, `3` down | three fingers swiped that way; sent once per swipe |
+| `5`  | phase (`0` begin, `1` change, `2` end), magnification: big-endian float32 | two fingers pinched; zoom |
+| `6`  | key: `0` volume up, `1` volume down, `2` mute, `3` brightness up, `4` brightness down, `5` play/pause | a button under the trackpad was pressed |
 
 Distances are in the phone's density-independent pixels (160 per inch), y down. The Mac turns
 them into pointer movement (speeding up fast swipes) and scrolling in the direction of its own
@@ -233,7 +235,11 @@ click count 2. A three-finger swipe does what it does on the Mac's own trackpad:
 switch spaces and full-screen apps (fingers moving left bring in the one on the right), up opens
 Mission Control and down shows the front app's windows. The Mac does this by pressing the
 Mission Control keyboard shortcuts (Control + arrow keys), so they must be left on in System
-Settings → Keyboard → Keyboard Shortcuts. Unknown types are skipped, so newer phones can send more.
+Settings → Keyboard → Keyboard Shortcuts. A pinch is sent as a begin, any number of changes and an
+end; each change's magnification is the zoom since the one before, where 1 doubles the size and
+negative values zoom out, and the Mac passes it on as its own trackpad's magnify gesture. Keys act
+like the Mac keyboard's top row; brightness moves the built-in display one of its 16 steps. If a
+session ends in the middle of a pinch the Mac ends the gesture. Unknown types are skipped, so newer phones can send more.
 
 Both sides send a keepalive at least every 2 seconds when they have nothing else to send (the
 Mac sends nothing but keepalives). The Mac ends a session that's silent for 10 seconds, the phone

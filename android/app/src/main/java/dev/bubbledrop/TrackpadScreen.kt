@@ -17,6 +17,20 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeDown
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.BrightnessHigh
+import androidx.compose.material.icons.rounded.BrightnessLow
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.size
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -86,6 +100,7 @@ fun TrackpadOverlay() {
                     "Slide to move the pointer · Tap to click\n" +
                         "Two fingers to scroll · Two-finger tap to right-click\n" +
                         "Tap, then touch and slide to drag\n" +
+                        "Pinch to zoom\n" +
                         "Three fingers left or right to switch apps · Up for Mission Control",
                     style = IosType.footnote, color = ios.tertiaryLabel, textAlign = TextAlign.Center,
                     modifier = Modifier.padding(24.dp),
@@ -102,6 +117,52 @@ fun TrackpadOverlay() {
                 Trackpad.State.Idle -> Unit
             }
         }
+        if (state is Trackpad.State.Active) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                MacKey(Icons.Rounded.BrightnessLow, "Brightness down", Trackpad.KEY_BRIGHTNESS_DOWN, repeats = true)
+                MacKey(Icons.Rounded.BrightnessHigh, "Brightness up", Trackpad.KEY_BRIGHTNESS_UP, repeats = true)
+                MacKey(Icons.Rounded.PlayArrow, "Play or pause", Trackpad.KEY_PLAY_PAUSE, repeats = false)
+                MacKey(Icons.AutoMirrored.Rounded.VolumeOff, "Mute", Trackpad.KEY_MUTE, repeats = false)
+                MacKey(Icons.AutoMirrored.Rounded.VolumeDown, "Volume down", Trackpad.KEY_VOLUME_DOWN, repeats = true)
+                MacKey(Icons.AutoMirrored.Rounded.VolumeUp, "Volume up", Trackpad.KEY_VOLUME_UP, repeats = true)
+            }
+        }
+    }
+}
+
+/** One of the Mac's volume, brightness or play keys. Holding a [repeats] key keeps pressing it. */
+@Composable
+private fun MacKey(icon: ImageVector, label: String, key: Int, repeats: Boolean) {
+    val ios = Ios.colors
+    Box(
+        Modifier.size(52.dp).clip(RoundedCornerShape(16.dp)).background(ios.cell)
+            .pointerInput(key) {
+                awaitEachGesture {
+                    awaitFirstDown().consume()
+                    Trackpad.key(key)
+                    var wait = 400L
+                    // Until the finger lifts: a repeating key presses again after each wait.
+                    while (true) {
+                        val lifted = withTimeoutOrNull(wait) {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                event.changes.forEach { it.consume() }
+                                if (event.changes.none { it.pressed }) break
+                            }
+                            true
+                        }
+                        if (lifted == true) break
+                        if (repeats) Trackpad.key(key)
+                        wait = 120L
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, label, tint = ios.label)
     }
 }
 
@@ -109,13 +170,16 @@ fun TrackpadOverlay() {
 private const val TAP_MAX_MS = 250L
 /** A touch that starts this soon after a tap continues it: a double click, or a drag if it moves. */
 private const val TAP_GAP_MS = 300L
+/** How much further apart two fingers move, in dp, to double the size. */
+private const val ZOOM_DP = 150f
 /** How far three fingers travel, in dp, before it counts as a swipe. */
 private const val SWIPE_DP = 40f
 
 /**
  * One finger moves the pointer and two scroll. A tap clicks (two fingers: right-click). A touch
  * right after a tap holds the button down once it moves, so tap-then-slide drags. Three fingers
- * swiping left, right, up or down are sent as one swipe, like on the Mac's own trackpad.
+ * swiping left, right, up or down are sent as one swipe, like on the Mac's own trackpad. Two
+ * fingers moving apart or together zoom.
  */
 private suspend fun PointerInputScope.trackpadGestures() {
     val slop = viewConfiguration.touchSlop
@@ -132,6 +196,10 @@ private suspend fun PointerInputScope.trackpadGestures() {
         var dragging = false
         var swipe = Offset.Zero
         var swiped = false
+        // The gap between two fingers when both first touched, and at the last event.
+        var firstSpread = -1f
+        var lastSpread = 0f
+        var pinching = false
         var endedAt = startedAt
         try {
             while (true) {
@@ -141,6 +209,29 @@ private suspend fun PointerInputScope.trackpadGestures() {
                 val pressed = event.changes.filter { it.pressed }
                 if (pressed.isEmpty()) break
                 fingers = maxOf(fingers, pressed.size)
+                if (pinching) {
+                    // Once it's a pinch it stays one; a finger lifting early doesn't nudge the pointer.
+                    if (pressed.size == 2) {
+                        val spread = (pressed[0].position - pressed[1].position).getDistance()
+                        if (spread != lastSpread) {
+                            Trackpad.zoom(Trackpad.ZOOM_CHANGE, (spread - lastSpread) / density / ZOOM_DP)
+                            lastSpread = spread
+                        }
+                    }
+                    continue
+                }
+                if (pressed.size == 2 && fingers == 2 && !dragging && !moved) {
+                    // Fingers moving apart or together, rather than side by side, are a pinch.
+                    val spread = (pressed[0].position - pressed[1].position).getDistance()
+                    if (firstSpread < 0) firstSpread = spread
+                    if (kotlin.math.abs(spread - firstSpread) > slop * 2) {
+                        pinching = true
+                        moved = true
+                        lastSpread = spread
+                        Trackpad.zoom(Trackpad.ZOOM_BEGIN)
+                        continue
+                    }
+                }
                 // The fingers' average movement; one that just landed hasn't moved yet.
                 val moving = pressed.filter { it.previousPressed }
                 if (moving.isEmpty()) continue
@@ -182,6 +273,7 @@ private suspend fun PointerInputScope.trackpadGestures() {
         } finally {
             // Also when the gesture is cancelled, so the Mac's button is never left held.
             if (dragging) Trackpad.button(Trackpad.BUTTON_LEFT, down = false)
+            if (pinching) Trackpad.zoom(Trackpad.ZOOM_END)
         }
         if (moved || endedAt - startedAt > TAP_MAX_MS) {
             lastTapAt = 0

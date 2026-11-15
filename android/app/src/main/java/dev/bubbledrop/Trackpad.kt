@@ -35,12 +35,25 @@ object Trackpad {
     const val SWIPE_UP = 2
     const val SWIPE_DOWN = 3
 
+    const val ZOOM_BEGIN = 0
+    const val ZOOM_CHANGE = 1
+    const val ZOOM_END = 2
+
+    const val KEY_VOLUME_UP = 0
+    const val KEY_VOLUME_DOWN = 1
+    const val KEY_MUTE = 2
+    const val KEY_BRIGHTNESS_UP = 3
+    const val KEY_BRIGHTNESS_DOWN = 4
+    const val KEY_PLAY_PAUSE = 5
+
     private const val TAG = "Trackpad"
     private const val TYPE_KEEPALIVE = 0
     private const val TYPE_MOVE = 1
     private const val TYPE_BUTTON = 2
     private const val TYPE_SCROLL = 3
     private const val TYPE_SWIPE = 4
+    private const val TYPE_ZOOM = 5
+    private const val TYPE_KEY = 6
     /** The Mac drops a phone it hasn't heard from in 10 s. */
     private const val KEEPALIVE_MS = 2_000L
     /** The Mac sends a keepalive every 2 s; this much silence means it's gone. */
@@ -84,6 +97,13 @@ object Trackpad {
 
     /** Three fingers swiped this way; the Mac switches spaces or shows Mission Control. */
     fun swipe(direction: Int) = send(packet(TYPE_SWIPE, byteArrayOf(direction.toByte())))
+
+    /** A pinch began, changed or ended. [magnification] is the zoom since the last event: 1 doubles the size. */
+    fun zoom(phase: Int, magnification: Float = 0f) =
+        send(packet(TYPE_ZOOM, ByteBuffer.allocate(5).put(phase.toByte()).putFloat(magnification).array()))
+
+    /** One of the volume, brightness or play buttons. */
+    fun key(key: Int) = send(packet(TYPE_KEY, byteArrayOf(key.toByte())))
 
     /** [clicks] is 1 for a single click, 2 for the second click of a double click. */
     fun button(button: Int, down: Boolean, clicks: Int = 1) =

@@ -25,6 +25,23 @@ public final class TrackpadStream: @unchecked Sendable {
         case down = 3
     }
 
+    /// Where a two-finger pinch is: it begins, changes any number of times, then ends.
+    public enum ZoomPhase: UInt8, Sendable {
+        case begin = 0
+        case change = 1
+        case end = 2
+    }
+
+    /// The buttons under the phone's trackpad.
+    public enum MediaKey: UInt8, Sendable {
+        case volumeUp = 0
+        case volumeDown = 1
+        case mute = 2
+        case brightnessUp = 3
+        case brightnessDown = 4
+        case playPause = 5
+    }
+
     public enum Event: Sendable {
         /// The finger moved by this much, in the phone's density-independent pixels (y down).
         case move(dx: Double, dy: Double)
@@ -34,6 +51,11 @@ public final class TrackpadStream: @unchecked Sendable {
         case scroll(dx: Double, dy: Double)
         /// Three fingers swiped. Sent once per swipe.
         case swipe(Swipe)
+        /// Two fingers pinched. `magnification` is how much to zoom since the last event: 1 doubles
+        /// the size, negative zooms out.
+        case zoom(ZoomPhase, magnification: Double)
+        /// One of the volume, brightness or play buttons was pressed.
+        case key(MediaKey)
     }
 
     /// The phone sends something at least every 2 s; this much silence means it's gone.
@@ -73,6 +95,12 @@ public final class TrackpadStream: @unchecked Sendable {
                 if let (dx, dy) = Self.deltas(payload) { return .scroll(dx: dx, dy: dy) }
             case 4:
                 if let first = payload.first, let swipe = Swipe(rawValue: first) { return .swipe(swipe) }
+            case 5:
+                guard payload.count >= 5, let phase = ZoomPhase(rawValue: payload[payload.startIndex]),
+                      let amount = Self.float(payload.dropFirst()) else { continue }
+                return .zoom(phase, magnification: Double(min(max(amount, -4), 4)))
+            case 6:
+                if let first = payload.first, let key = MediaKey(rawValue: first) { return .key(key) }
             default:
                 // 0 is the keepalive; anything newer than this Mac knows is skipped.
                 continue
@@ -91,6 +119,13 @@ public final class TrackpadStream: @unchecked Sendable {
         }
         guard let dx = value(0), let dy = value(4) else { return nil }
         return (dx, dy)
+    }
+
+    /// One big-endian float32.
+    private static func float(_ payload: Data) -> Float? {
+        guard payload.count >= 4 else { return nil }
+        let float = Float(bitPattern: payload.prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
+        return float.isFinite ? float : nil
     }
 
     /// Ends the session from this side.

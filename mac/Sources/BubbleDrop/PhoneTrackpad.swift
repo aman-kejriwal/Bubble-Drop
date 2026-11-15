@@ -69,6 +69,8 @@ final class PhoneTrackpad: ObservableObject {
             case .button(let button, let down, let clicks): pointer.button(button, down: down, clicks: clicks)
             case .scroll(let dx, let dy): pointer.scroll(dx: dx, dy: dy)
             case .swipe(let swipe): pointer.swipe(swipe)
+            case .zoom(let phase, let magnification): pointer.zoom(phase, magnification: magnification)
+            case .key(let key): pointer.key(key)
             }
         }
         // Never leave a button held down by a phone that's gone.
@@ -90,6 +92,7 @@ private final class PointerInjector {
     private var speed = 0.0
     private var held: Set<TrackpadStream.Button> = []
     private var scrollRemainder = CGPoint.zero
+    private var zooming = false
     /// macOS's "Natural scrolling" setting; posted events aren't flipped by the system.
     private let naturalScrolling = UserDefaults.standard.object(forKey: "com.apple.swipescrolldirection") as? Bool ?? true
 
@@ -179,8 +182,77 @@ private final class PointerInjector {
         }
     }
 
+    /// A pinch, as the magnify gesture the Mac's own trackpad sends, so apps zoom smoothly around
+    /// the pointer. macOS has no public way to make one; these are the fields its own events carry.
+    func zoom(_ phase: TrackpadStream.ZoomPhase, magnification: Double) {
+        switch phase {
+        case .begin:
+            if zooming { postZoom(0, phase: 4) }
+            zooming = true
+            postZoom(0, phase: 1)
+        case .change:
+            guard zooming, magnification != 0 else { return }
+            postZoom(magnification, phase: 2)
+        case .end:
+            guard zooming else { return }
+            zooming = false
+            postZoom(0, phase: 4)
+        }
+    }
+
+    /// `phase` is 1 when the gesture begins, 2 while it changes and 4 when it ends.
+    private func postZoom(_ magnification: Double, phase: Int64) {
+        guard let event = CGEvent(source: nil), let gesture = CGEventType(rawValue: 29),
+              let kind = CGEventField(rawValue: 110), let amount = CGEventField(rawValue: 113),
+              let phaseField = CGEventField(rawValue: 132) else { return }
+        event.type = gesture
+        event.setIntegerValueField(kind, value: 8)  // a zoom gesture
+        event.setDoubleValueField(amount, value: magnification)
+        event.setIntegerValueField(phaseField, value: phase)
+        event.post(tap: .cghidEventTap)
+    }
+
+    func key(_ key: TrackpadStream.MediaKey) {
+        switch key {
+        case .volumeUp: pressMediaKey(0)
+        case .volumeDown: pressMediaKey(1)
+        case .mute: pressMediaKey(7)
+        case .playPause: pressMediaKey(16)
+        case .brightnessUp: stepBrightness(1)
+        case .brightnessDown: stepBrightness(-1)
+        }
+    }
+
+    /// Presses one of the keyboard's media keys (the top row), which is how the volume and
+    /// play keys reach macOS.
+    private func pressMediaKey(_ code: Int) {
+        for down in [true, false] {
+            let state = down ? 0xa : 0xb
+            NSEvent.otherEvent(with: .systemDefined, location: .zero,
+                               modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(state << 8)),
+                               timestamp: 0, windowNumber: 0, context: nil, subtype: 8,
+                               data1: code << 16 | state << 8, data2: -1)?
+                .cgEvent?.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Moves the built-in display's brightness one of the keyboard's 16 steps. Posted brightness
+    /// keys are ignored on Apple silicon, so this sets the display directly.
+    private func stepBrightness(_ direction: Float) {
+        typealias Getter = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
+        typealias Setter = @convention(c) (CGDirectDisplayID, Float) -> Int32
+        guard let services = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY),
+              let getter = dlsym(services, "DisplayServicesGetBrightness"),
+              let setter = dlsym(services, "DisplayServicesSetBrightness") else { return }
+        let display = CGMainDisplayID()
+        var level: Float = 0
+        guard unsafeBitCast(getter, to: Getter.self)(display, &level) == 0 else { return }
+        _ = unsafeBitCast(setter, to: Setter.self)(display, min(max(level + direction / 16, 0), 1))
+    }
+
     func releaseAll() {
         for button in held { self.button(button, down: false, clicks: 1) }
+        zoom(.end, magnification: 0)
     }
 
     /// Keeps the pointer on a screen: a point past every display's edge is pulled back onto the

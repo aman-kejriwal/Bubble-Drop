@@ -48,10 +48,11 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
   files go to `Download/BubbleDrop`.
 - **Use as Trackpad** (shown when the paired Mac is nearby) turns the phone into the Mac's
   trackpad: slide to move the pointer, tap to click, two fingers to scroll, two-finger tap to
-  right-click, tap then slide to drag, three fingers left or right to switch spaces and
-  full-screen apps, three fingers up for Mission Control and down for the front app's windows.
-  On the Mac, turn on **Use phone as trackpad** in the BubbleDrop menu and allow BubbleDrop
-  under Privacy & Security → Accessibility.
+  right-click, tap then slide to drag, pinch to zoom, three fingers left or right to switch
+  spaces and full-screen apps, three fingers up for Mission Control and down for the front
+  app's windows. The buttons under the pad set the Mac's brightness and volume and play or
+  pause its media. On the Mac, turn on **Use phone as trackpad** in the BubbleDrop menu and
+  allow BubbleDrop under Privacy & Security → Accessibility.
 
 ## Folder sync
 
