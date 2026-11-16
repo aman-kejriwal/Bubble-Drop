@@ -3,6 +3,7 @@ package dev.bubbledrop
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -79,8 +80,21 @@ object Trackpad {
     @Volatile private var session: Session? = null
     private var lastPeer: Peer? = null
 
+    /** The most characters of what was typed that the pad shows. */
+    private const val TYPED_SHOWN = 40
+
+    private val _typed = MutableStateFlow("")
+    /** The end of what was just typed on the phone's keyboard, which the pad shows for a moment. */
+    val typed: StateFlow<String> = _typed
+
+    /** The pad has shown what was typed for long enough. */
+    fun clearTyped() {
+        _typed.value = ""
+    }
+
     /** Connects to [peer] and shows the trackpad screen. */
     fun open(peer: Peer) {
+        _typed.value = ""
         session?.end()
         lastPeer = peer
         val next = Session(peer)
@@ -97,6 +111,7 @@ object Trackpad {
 
     /** Ends the session and leaves the trackpad screen. */
     fun close() {
+        _typed.value = ""
         session?.end()
         session = null
         _state.value = State.Idle
@@ -116,10 +131,22 @@ object Trackpad {
         send(packet(TYPE_ZOOM, ByteBuffer.allocate(5).put(phase.toByte()).putFloat(magnification).array()))
 
     /** One of the volume, brightness or play buttons, or a typing key such as Return or Delete. */
-    fun key(key: Int) = send(packet(TYPE_KEY, byteArrayOf(key.toByte())))
+    fun key(key: Int) {
+        when (key) {
+            KEY_DELETE -> _typed.update { if (it.isEmpty()) it else it.substring(0, it.offsetByCodePoints(it.length, -1)) }
+            // The Mac's cursor has left what the pad was showing.
+            KEY_RETURN, KEY_ESCAPE, KEY_TAB, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN -> _typed.value = ""
+        }
+        send(packet(TYPE_KEY, byteArrayOf(key.toByte())))
+    }
 
     /** Text typed on the phone's keyboard, for the Mac to type. */
     fun text(text: String) {
+        _typed.update {
+            val end = (it + text).substringAfterLast('\n').takeLast(TYPED_SHOWN)
+            // Not half of an emoji at the cut.
+            if (end.isNotEmpty() && Character.isLowSurrogate(end[0])) end.drop(1) else end
+        }
         var start = 0
         while (start < text.length) {
             var end = minOf(start + TEXT_CHUNK, text.length)

@@ -3,6 +3,9 @@ package dev.bubbledrop
 import android.view.HapticFeedbackConstants
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.width
@@ -160,6 +163,7 @@ fun TrackpadOverlay() {
                 }
                 Trackpad.State.Idle -> Unit
             }
+            if (active != null) TypedPreview(Modifier.align(Alignment.TopCenter).padding(horizontal = 20.dp, vertical = 14.dp))
         }
         if (state is Trackpad.State.Active) {
             Row(
@@ -185,6 +189,33 @@ fun TrackpadOverlay() {
             }
         }
     }
+}
+
+/** How long the pad shows what was typed after the last key. */
+private const val TYPED_SHOWN_MS = 1500L
+
+/**
+ * The end of what was just typed, on the pad for a moment after each key so you can see it
+ * without looking up at the Mac. It takes no touches: the pad under it works as usual.
+ */
+@Composable
+private fun TypedPreview(modifier: Modifier) {
+    val typed by Trackpad.typed.collectAsState()
+    LaunchedEffect(typed) {
+        if (typed.isNotEmpty()) {
+            delay(TYPED_SHOWN_MS)
+            Trackpad.clearTyped()
+        }
+    }
+    // What to keep showing while it fades out.
+    val last = remember { arrayOf("") }
+    if (typed.isNotEmpty()) last[0] = typed
+    val alpha by animateFloatAsState(if (typed.isEmpty()) 0f else 1f, label = "typed")
+    if (alpha == 0f) return
+    Text(
+        last[0], style = IosType.title2, color = Ios.colors.label, maxLines = 1,
+        overflow = TextOverflow.StartEllipsis, modifier = modifier.alpha(alpha),
+    )
 }
 
 @Composable

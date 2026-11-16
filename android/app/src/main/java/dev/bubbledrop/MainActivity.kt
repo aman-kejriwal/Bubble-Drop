@@ -134,6 +134,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** While the trackpad is open, the phone's volume buttons set the Mac's volume, not the phone's. */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        val key = when (event.keyCode) {
+            android.view.KeyEvent.KEYCODE_VOLUME_UP -> Trackpad.KEY_VOLUME_UP
+            android.view.KeyEvent.KEYCODE_VOLUME_DOWN -> Trackpad.KEY_VOLUME_DOWN
+            else -> return super.dispatchKeyEvent(event)
+        }
+        if (Trackpad.state.value !is Trackpad.State.Active) return super.dispatchKeyEvent(event)
+        // A held button repeats about 20 times a second; every third is a step on the Mac.
+        if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount % 3 == 0) Trackpad.key(key)
+        return true
+    }
+
     override fun onResume() {
         super.onResume()
         Links.appVisible = true
