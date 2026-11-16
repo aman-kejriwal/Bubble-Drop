@@ -103,6 +103,20 @@ public struct LinkResponse: Codable, Sendable {
     }
 }
 
+/// Text for the receiver's clipboard: `POST /api/v2/text`.
+public struct TextRequest: Codable, Sendable {
+    public var sender: DeviceInfo
+    public var text: String
+
+    public init(sender: DeviceInfo, text: String) {
+        self.sender = sender
+        self.text = text
+    }
+}
+
+/// The longest text that can be sent to a clipboard, in UTF-8 bytes.
+public let maxClipboardTextBytes = 256 * 1024
+
 /// Only http(s) links are sent or opened; other schemes could launch arbitrary apps or files.
 public func isWebLink(_ url: URL) -> Bool {
     ["http", "https"].contains(url.scheme?.lowercased() ?? "") && !(url.host ?? "").isEmpty

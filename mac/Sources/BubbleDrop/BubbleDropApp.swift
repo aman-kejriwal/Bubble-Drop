@@ -163,10 +163,10 @@ struct FromPhoneSection: View {
             }
             .pickerStyle(.menu)
             .disabled(!phone.showCalls)
-            Toggle("Use phone as trackpad", isOn: $trackpad.enabled)
+            Toggle("Use phone as trackpad and keyboard", isOn: $trackpad.enabled)
             if trackpad.enabled && !trackpad.accessGranted {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Allow BubbleDrop under Accessibility so it can move the pointer.")
+                    Text("Allow BubbleDrop under Accessibility so it can move the pointer and type.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
@@ -174,7 +174,7 @@ struct FromPhoneSection: View {
                         .buttonStyle(.link)
                 }
             } else if let name = trackpad.activeName {
-                Text("\(name) is controlling the pointer").foregroundStyle(.green)
+                Text("\(name) is controlling the pointer and keyboard").foregroundStyle(.green)
             }
             if !phone.knownApps.isEmpty {
                 DisclosureGroup("Apps (\(phone.knownApps.count))") {
@@ -271,6 +271,15 @@ struct PeerRow: View {
                     .lineLimit(1)
             }
             Spacer()
+            if paired {
+                Button {
+                    model.sendClipboard(to: peer)
+                } label: {
+                    Image(systemName: "doc.on.clipboard")
+                }
+                .controlSize(.small)
+                .help("Send the text on this Mac's clipboard to \(peer.name)'s clipboard")
+            }
             // Sending to an unpaired device pairs first (AppModel.send); nothing goes out unpaired.
             Button("Send…") { model.chooseFiles(for: peer) }
                 .controlSize(.small)
@@ -296,11 +305,20 @@ struct TransferRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Image(systemName: transfer.link != nil ? "link.circle"
+                Image(systemName: transfer.text != nil ? "doc.on.clipboard"
+                      : transfer.link != nil ? "link.circle"
                       : transfer.direction == .incoming ? "arrow.down.circle" : "arrow.up.circle")
                 Text(transfer.summary).lineLimit(1)
                 Spacer()
-                if transfer.status == .done {
+                if transfer.status == .done, transfer.text != nil {
+                    Button {
+                        model.copyAgain(transfer)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy this text again")
+                } else if transfer.status == .done {
                     Button {
                         model.reveal(transfer)
                     } label: {
@@ -313,14 +331,18 @@ struct TransferRow: View {
             .font(.caption)
             switch transfer.status {
             case .waiting:
-                Text(transfer.direction == .outgoing ? "Waiting for \(transfer.peerName) to accept…" : "Waiting…")
+                Text(transfer.text != nil ? "Sending to \(transfer.peerName)…"
+                     : transfer.direction == .outgoing ? "Waiting for \(transfer.peerName) to accept…" : "Waiting…")
                     .font(.caption2).foregroundStyle(.secondary)
             case .active:
                 ProgressView(value: transfer.fraction)
                 Text("\(formatBytes(transfer.doneBytes)) of \(formatBytes(transfer.totalBytes))")
                     .font(.caption2).foregroundStyle(.secondary)
             case .done:
-                Text(transfer.direction == .outgoing ? "Sent to \(transfer.peerName)" : "From \(transfer.peerName)")
+                Text(transfer.text != nil
+                     ? (transfer.direction == .outgoing ? "Copied to \(transfer.peerName)'s clipboard"
+                        : "From \(transfer.peerName) · copied to the clipboard")
+                     : transfer.direction == .outgoing ? "Sent to \(transfer.peerName)" : "From \(transfer.peerName)")
                     .font(.caption2).foregroundStyle(.secondary)
             case .failed(let message):
                 Text(message).font(.caption2).foregroundStyle(.red).lineLimit(2)

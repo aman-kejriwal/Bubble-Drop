@@ -2,9 +2,9 @@ import AppKit
 import ApplicationServices
 import BubbleDropCore
 
-/// Lets a paired phone act as this Mac's trackpad (PROTOCOL.md "Trackpad"). Off until the user
-/// turns it on here, and macOS only lets BubbleDrop move the pointer once it's allowed under
-/// Privacy & Security → Accessibility.
+/// Lets a paired phone act as this Mac's trackpad and keyboard (PROTOCOL.md "Trackpad"). Off
+/// until the user turns it on here, and macOS only lets BubbleDrop move the pointer and type
+/// once it's allowed under Privacy & Security → Accessibility.
 @MainActor
 final class PhoneTrackpad: ObservableObject {
     static let shared = PhoneTrackpad()
@@ -46,7 +46,7 @@ final class PhoneTrackpad: ObservableObject {
     /// Why a phone can't be the trackpad right now, in words for the phone's screen; nil if it can.
     nonisolated static func refusal() -> String? {
         guard UserDefaults.standard.bool(forKey: key) else {
-            return "Turn on \"Use phone as trackpad\" in BubbleDrop on the Mac first."
+            return "Turn on \"Use phone as trackpad and keyboard\" in BubbleDrop on the Mac first."
         }
         guard AXIsProcessTrusted() else {
             return "On the Mac, allow BubbleDrop under Privacy & Security → Accessibility, then try again."
@@ -71,6 +71,7 @@ final class PhoneTrackpad: ObservableObject {
             case .swipe(let swipe): pointer.swipe(swipe)
             case .zoom(let phase, let magnification): pointer.zoom(phase, magnification: magnification)
             case .key(let key): pointer.key(key)
+            case .text(let text): pointer.type(text)
             }
         }
         // Never leave a button held down by a phone that's gone.
@@ -212,7 +213,7 @@ private final class PointerInjector {
         event.post(tap: .cghidEventTap)
     }
 
-    func key(_ key: TrackpadStream.MediaKey) {
+    func key(_ key: TrackpadStream.Key) {
         switch key {
         case .volumeUp: pressMediaKey(0)
         case .volumeDown: pressMediaKey(1)
@@ -220,6 +221,48 @@ private final class PointerInjector {
         case .playPause: pressMediaKey(16)
         case .brightnessUp: stepBrightness(1)
         case .brightnessDown: stepBrightness(-1)
+        case .returnKey: pressKey(36)
+        case .delete: pressKey(51)
+        case .escape: pressKey(53)
+        case .tab: pressKey(48)
+        case .left: pressKey(123, arrow: true)
+        case .right: pressKey(124, arrow: true)
+        case .down: pressKey(125, arrow: true)
+        case .up: pressKey(126, arrow: true)
+        }
+    }
+
+    /// Presses and releases one key of the keyboard, with no modifiers held.
+    private func pressKey(_ code: CGKeyCode, arrow: Bool = false) {
+        for down in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else { continue }
+            // Arrow keys carry these two flags when they come from a real keyboard.
+            event.flags = arrow ? [.maskSecondaryFn, .maskNumericPad] : []
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Types `text` into whatever has the keyboard, one character at a time: each goes as a key
+    /// press carrying the character itself, so it doesn't depend on the Mac's keyboard layout.
+    func type(_ text: String) {
+        for character in text {
+            if character.isNewline {
+                pressKey(36)
+                continue
+            }
+            if character == "\t" {
+                pressKey(48)
+                continue
+            }
+            // Other control characters aren't text.
+            guard !character.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else { continue }
+            let units = Array(String(character).utf16)
+            for down in [true, false] {
+                guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
+                event.flags = []
+                event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                event.post(tap: .cghidEventTap)
+            }
         }
     }
 

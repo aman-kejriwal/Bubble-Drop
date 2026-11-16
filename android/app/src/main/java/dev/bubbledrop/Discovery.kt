@@ -5,6 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -44,6 +45,12 @@ class Discovery(context: Context, private val device: DeviceInfo, private val fi
     private val resolveQueue = ArrayDeque<NsdServiceInfo>()
     private var resolving = false
 
+    // Android 14 and later keep watching each service found, by name, so a device that restarts
+    // on a new port (or moves to a new address) is followed there. A one-off resolve isn't
+    // repeated, and would leave the old port in the list.
+    private val executor = context.mainExecutor
+    private val watches = HashMap<String, NsdManager.ServiceInfoCallback>()
+
     fun register(port: Int) {
         val info = NsdServiceInfo().apply {
             serviceName = device.name
@@ -72,8 +79,11 @@ class Discovery(context: Context, private val device: DeviceInfo, private val fi
             override fun onDiscoveryStopped(serviceType: String) {}
             override fun onStartDiscoveryFailed(serviceType: String, code: Int) { Log.w(TAG, "browse failed $code") }
             override fun onStopDiscoveryFailed(serviceType: String, code: Int) {}
-            override fun onServiceFound(info: NsdServiceInfo) = enqueueResolve(info)
+            override fun onServiceFound(info: NsdServiceInfo) {
+                if (Build.VERSION.SDK_INT >= 34) watch(info) else enqueueResolve(info)
+            }
             override fun onServiceLost(info: NsdServiceInfo) {
+                if (Build.VERSION.SDK_INT >= 34) unwatch(info.serviceName)
                 _peers.update { list -> list.filterNot { it.serviceName == info.serviceName } }
             }
         }
@@ -86,10 +96,54 @@ class Discovery(context: Context, private val device: DeviceInfo, private val fi
         discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }
         registration = null
         discovery = null
+        if (Build.VERSION.SDK_INT >= 34) {
+            synchronized(watches) { watches.keys.toList() }.forEach(::unwatch)
+        }
         _peers.value = emptyList()
         synchronized(resolveQueue) {
             resolveQueue.clear()
             resolving = false
+        }
+    }
+
+    /** Keeps the peer for [info] up to date until the service is lost. */
+    @RequiresApi(34)
+    private fun watch(info: NsdServiceInfo) {
+        val name = info.serviceName
+        val callback = object : NsdManager.ServiceInfoCallback {
+            override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
+                Log.w(TAG, "watch $name failed $errorCode")
+                synchronized(watches) { if (watches[name] === this) watches.remove(name) }
+            }
+            override fun onServiceUpdated(updated: NsdServiceInfo) = add(updated)
+            override fun onServiceLost() {
+                _peers.update { list -> list.filterNot { it.serviceName == name } }
+            }
+            override fun onServiceInfoCallbackUnregistered() {}
+        }
+        synchronized(watches) {
+            if (watches.containsKey(name)) return
+            watches[name] = callback
+        }
+        runCatching { nsd.registerServiceInfoCallback(info, executor, callback) }.onFailure {
+            Log.w(TAG, "watch $name failed", it)
+            synchronized(watches) { watches.remove(name) }
+        }
+    }
+
+    @RequiresApi(34)
+    private fun unwatch(name: String) {
+        val callback = synchronized(watches) { watches.remove(name) } ?: return
+        runCatching { nsd.unregisterServiceInfoCallback(callback) }
+    }
+
+    /** Puts a resolved service in the list, in place of what was known about that device. */
+    private fun add(info: NsdServiceInfo) {
+        toPeer(info)?.let { peer ->
+            _peers.update { list ->
+                (list.filterNot { it.id == peer.id || it.serviceName == peer.serviceName } + peer)
+                    .sortedBy { it.name.lowercase() }
+            }
         }
     }
 
@@ -114,12 +168,7 @@ class Discovery(context: Context, private val device: DeviceInfo, private val fi
             }
 
             override fun onServiceResolved(info: NsdServiceInfo) {
-                toPeer(info)?.let { peer ->
-                    _peers.update { list ->
-                        (list.filterNot { it.id == peer.id || it.serviceName == peer.serviceName } + peer)
-                            .sortedBy { it.name.lowercase() }
-                    }
-                }
+                add(info)
                 resolveNext()
             }
         })

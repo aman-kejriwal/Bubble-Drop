@@ -123,6 +123,8 @@ class ReceiveServer(
                 "/api/v2/upload" -> if (!paired) PAIRING_REQUIRED else handleUpload(peer, request)
                 "/api/v2/link" ->
                     if (!paired) PAIRING_REQUIRED else handleLink(peer, LinkRequest.fromJson(request.readJson()))
+                "/api/v2/text" ->
+                    if (!paired) PAIRING_REQUIRED else handleText(peer, TextRequest.fromJson(request.readJson()))
                 "/api/v2/notification/action" -> if (!paired) PAIRING_REQUIRED else {
                     val body = request.readJson()
                     val relay = NotificationRelay.instance
@@ -191,6 +193,25 @@ class ReceiveServer(
             )
         )
         return 200 to JSONObject().put("opened", opened)
+    }
+
+    // Text
+
+    private fun handleText(client: String, request: TextRequest): Pair<Int, JSONObject> {
+        if (!receivingEnabled) return 503 to errorJson("receiving is off")
+        if (request.text.isEmpty()) return 400 to errorJson("there's no text to copy")
+        if (request.text.toByteArray().size > MAX_CLIPBOARD_TEXT_BYTES) return 400 to errorJson("that's too much text to copy")
+        val sender = trust.device(client)?.let { request.sender.copy(name = it.name) } ?: request.sender
+        val copied = Texts.received(context, sender, request.text)
+        transfers.upsert(
+            Transfer(
+                id = UUID.randomUUID().toString(), incoming = true, peerName = sender.name,
+                peerPlatform = sender.platform, summary = Texts.preview(request.text), totalBytes = 0,
+                status = if (copied) Transfer.Status.Done else Transfer.Status.Failed("Couldn't copy the text"),
+                text = request.text,
+            )
+        )
+        return if (copied) 200 to JSONObject() else 500 to errorJson("couldn't copy the text")
     }
 
     // Pairing

@@ -22,6 +22,8 @@ data class Transfer(
     val link: String? = null,
     /** For links: whether the receiver opened it right away (otherwise it showed a notification). */
     val linkOpened: Boolean = false,
+    /** Set when this transfer is text for the clipboard rather than files. */
+    val text: String? = null,
 ) {
     sealed interface Status {
         data object Waiting : Status

@@ -15,15 +15,16 @@ import javax.net.ssl.SSLSocket
 import kotlin.concurrent.thread
 
 /**
- * Uses this phone as a paired Mac's trackpad (PROTOCOL.md "Trackpad"): finger movement, clicks
- * and scrolling go out as small packets on one long-lived TLS connection. The session lasts
+ * Uses this phone as a paired Mac's trackpad and keyboard (PROTOCOL.md "Trackpad"): finger
+ * movement, clicks, scrolling and typing go out as small packets on one long-lived TLS connection. The session lasts
  * only while the trackpad screen is open.
  */
 object Trackpad {
     sealed interface State {
         object Idle : State
         data class Connecting(val name: String) : State
-        data class Active(val name: String) : State
+        /** [keyboard] is whether this Mac can be typed on too; older ones only take the trackpad. */
+        data class Active(val name: String, val keyboard: Boolean) : State
         data class Failed(val name: String, val message: String) : State
     }
 
@@ -45,6 +46,14 @@ object Trackpad {
     const val KEY_BRIGHTNESS_UP = 3
     const val KEY_BRIGHTNESS_DOWN = 4
     const val KEY_PLAY_PAUSE = 5
+    const val KEY_RETURN = 6
+    const val KEY_DELETE = 7
+    const val KEY_ESCAPE = 8
+    const val KEY_TAB = 9
+    const val KEY_LEFT = 10
+    const val KEY_RIGHT = 11
+    const val KEY_UP = 12
+    const val KEY_DOWN = 13
 
     private const val TAG = "Trackpad"
     private const val TYPE_KEEPALIVE = 0
@@ -54,11 +63,14 @@ object Trackpad {
     private const val TYPE_SWIPE = 4
     private const val TYPE_ZOOM = 5
     private const val TYPE_KEY = 6
+    private const val TYPE_TEXT = 7
+    /** The most text in one packet, in UTF-16 units; at most 3 bytes each, inside the 1024-byte payload. */
+    private const val TEXT_CHUNK = 250
     /** The Mac drops a phone it hasn't heard from in 10 s. */
     private const val KEEPALIVE_MS = 2_000L
     /** The Mac sends a keepalive every 2 s; this much silence means it's gone. */
     private const val SILENCE_LIMIT_MS = 8_000
-    /** Packets waiting to go out when the connection stalls; older movement isn't worth keeping. */
+    /** Packets waiting to go out when the connection stalls; past this, new movement is dropped. */
     private const val MAX_QUEUED = 512
 
     private val _state = MutableStateFlow<State>(State.Idle)
@@ -77,9 +89,10 @@ object Trackpad {
         thread(name = "trackpad") { next.run() }
     }
 
-    /** Connects again after a failure. */
+    /** Connects again after a failure, to wherever the Mac is now: it may have restarted on a new port. */
     fun retry() {
-        lastPeer?.let(::open)
+        val last = lastPeer ?: return
+        open(Graph.discovery.peers.value.firstOrNull { it.id == last.id } ?: last)
     }
 
     /** Ends the session and leaves the trackpad screen. */
@@ -102,8 +115,20 @@ object Trackpad {
     fun zoom(phase: Int, magnification: Float = 0f) =
         send(packet(TYPE_ZOOM, ByteBuffer.allocate(5).put(phase.toByte()).putFloat(magnification).array()))
 
-    /** One of the volume, brightness or play buttons. */
+    /** One of the volume, brightness or play buttons, or a typing key such as Return or Delete. */
     fun key(key: Int) = send(packet(TYPE_KEY, byteArrayOf(key.toByte())))
+
+    /** Text typed on the phone's keyboard, for the Mac to type. */
+    fun text(text: String) {
+        var start = 0
+        while (start < text.length) {
+            var end = minOf(start + TEXT_CHUNK, text.length)
+            // Both halves of an emoji or other surrogate pair go in the same packet.
+            if (end < text.length && Character.isHighSurrogate(text[end - 1])) end--
+            send(packet(TYPE_TEXT, text.substring(start, end).toByteArray(Charsets.UTF_8)))
+            start = end
+        }
+    }
 
     /** [clicks] is 1 for a single click, 2 for the second click of a double click. */
     fun button(button: Int, down: Boolean, clicks: Int = 1) =
@@ -132,7 +157,43 @@ object Trackpad {
         @Volatile private var socket: SSLSocket? = null
 
         fun send(packet: ByteArray) {
-            if (connected && !closed && queue.size < MAX_QUEUED) queue.offer(packet)
+            if (!connected || closed) return
+            // Only movement is dropped when the connection stalls. A lost button-up would leave
+            // the Mac's button held, and a lost zoom end would leave its gesture open.
+            if (queue.size >= MAX_QUEUED && isMovement(packet)) return
+            queue.offer(packet)
+        }
+
+        private fun isMovement(packet: ByteArray) =
+            packet.isNotEmpty() && (packet[0].toInt() == TYPE_MOVE || packet[0].toInt() == TYPE_SCROLL)
+
+        /**
+         * Writes [batch] to [bytes], adding up runs of moves or scrolls into one packet each: the
+         * Mac ends up in the same place with less to read.
+         */
+        private fun writeMerged(batch: List<ByteArray>, bytes: ByteArrayOutputStream) {
+            var type = -1
+            var dx = 0f
+            var dy = 0f
+            fun flush() {
+                if (type >= 0) bytes.write(deltas(type, dx, dy))
+                type = -1
+                dx = 0f
+                dy = 0f
+            }
+            for (packet in batch) {
+                if (isMovement(packet) && packet.size == 11) {
+                    if (packet[0].toInt() != type) flush()
+                    type = packet[0].toInt()
+                    val values = ByteBuffer.wrap(packet, 3, 8)
+                    dx += values.float
+                    dy += values.float
+                } else {
+                    flush()
+                    bytes.write(packet)
+                }
+            }
+            flush()
         }
 
         /** Ends the session quietly (the user left the trackpad screen). */
@@ -172,7 +233,8 @@ object Trackpad {
                     "Content-Type: application/json\r\nContent-Length: ${body.size}\r\n\r\n").toByteArray(Charsets.US_ASCII) + body)
                 output.flush()
                 val input = socket.inputStream
-                val (status, error) = readResponse(input)
+                val (status, answer) = readResponse(input)
+                val error = answer?.optString("error")?.ifBlank { null }
                 when (status) {
                     200 -> Unit
                     401 -> throw IOException("${peer.name} no longer trusts this device. Unpair it and pair again.")
@@ -183,7 +245,7 @@ object Trackpad {
                 }
                 socket.soTimeout = SILENCE_LIMIT_MS
                 connected = true
-                if (!closed && session === this) _state.value = State.Active(peer.name)
+                if (!closed && session === this) _state.value = State.Active(peer.name, answer?.optBoolean("keyboard") == true)
 
                 // The Mac only sends keepalives; the read ends when it closes the connection or goes quiet.
                 thread(name = "trackpad-input") {
@@ -213,7 +275,7 @@ object Trackpad {
                         }
                         // One write for everything that queued up, so it leaves as one TLS record.
                         bytes.reset()
-                        batch.forEach(bytes::write)
+                        writeMerged(batch, bytes)
                         if (bytes.size() == 0) continue
                         output.write(bytes.toByteArray())
                         output.flush()
@@ -229,8 +291,8 @@ object Trackpad {
             }
         }
 
-        /** The status, and the Mac's reason from the JSON body if it gave one. */
-        private fun readResponse(input: InputStream): Pair<Int, String?> {
+        /** The status, and the Mac's JSON body if it sent one. */
+        private fun readResponse(input: InputStream): Pair<Int, JSONObject?> {
             val head = StringBuilder()
             while (!head.endsWith("\r\n\r\n")) {
                 val b = input.read()
@@ -250,8 +312,7 @@ object Trackpad {
                 if (n < 0) throw IOException("connection closed")
                 read += n
             }
-            val error = runCatching { JSONObject(String(body, Charsets.UTF_8)).optString("error") }.getOrNull()
-            return status to error?.ifBlank { null }
+            return status to runCatching { JSONObject(String(body, Charsets.UTF_8)) }.getOrNull()
         }
     }
 }

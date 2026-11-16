@@ -143,6 +143,23 @@ data class LinkRequest(val sender: DeviceInfo, val url: String) {
     }
 }
 
+/** Text for the receiver's clipboard: `POST /api/v2/text`. */
+data class TextRequest(val sender: DeviceInfo, val text: String) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("sender", sender.toJson())
+        .put("text", text)
+
+    companion object {
+        fun fromJson(o: JSONObject) = TextRequest(
+            sender = DeviceInfo.fromJson(o.getJSONObject("sender")),
+            text = o.getString("text"),
+        )
+    }
+}
+
+/** The longest text that can be sent to a clipboard, in UTF-8 bytes. */
+const val MAX_CLIPBOARD_TEXT_BYTES = 256 * 1024
+
 /** Body of `POST /api/v2/mirror`; screen packets follow on the same connection. */
 data class MirrorRequest(val sender: DeviceInfo, val control: Boolean) {
     fun toJson(): JSONObject = JSONObject().put("sender", sender.toJson()).put("control", control)

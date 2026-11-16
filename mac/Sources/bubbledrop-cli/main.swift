@@ -16,6 +16,7 @@ func usage() -> Never {
            bubbledrop-cli browse
            bubbledrop-cli send [--state DIR] [--yes] <device-name | host:port> FILE...
            bubbledrop-cli link [--state DIR] [--yes] <device-name | host:port> URL
+           bubbledrop-cli text [--state DIR] [--yes] <device-name | host:port> TEXT
            bubbledrop-cli paired [--state DIR] [--forget FINGERPRINT]
            bubbledrop-cli sync [--state DIR] --folder PATH <device-name | host:port>
     serve also takes --sync-folder PATH to offer that folder for folder sync, and with
@@ -145,6 +146,10 @@ case "serve":
             }
         }
     }
+    server.textHandler = { sender, text in
+        print("Text from \(sender.name): \(text)")
+        return true
+    }
     server.askHandler = { request in
         print("Offer from \(request.sender.name) (\(request.sender.platform)): " +
               "\(request.files.count) file(s), \(byteFormat.string(fromByteCount: request.totalSize))")
@@ -196,6 +201,24 @@ case "link":
             return ask("Does \(prompt.peerName) show the same code?")
         })
         print(opened ? "Opened in the browser." : "Delivered; the receiver got a notification to open it.")
+    } catch {
+        print("Error: \(error.localizedDescription)")
+        exit(1)
+    }
+
+case "text":
+    let autoConfirm = flag("--yes", in: &args)
+    guard args.count == 2, !args[1].isEmpty else { usage() }
+    let endpoint = await resolve(args[0])
+    let state = try State(directory: stateDir, name: nil)
+    let client = BubbleDropClient(device: state.device, identity: state.identity, trust: state.trust)
+    do {
+        try await client.send(text: args[1], to: endpoint, confirmPairing: { prompt in
+            print("Pairing with \(prompt.peerName). Code: \(prompt.code)")
+            if autoConfirm { print("  auto-confirmed"); return true }
+            return ask("Does \(prompt.peerName) show the same code?")
+        })
+        print("Copied to the receiver's clipboard.")
     } catch {
         print("Error: \(error.localizedDescription)")
         exit(1)

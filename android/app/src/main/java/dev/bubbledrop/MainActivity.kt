@@ -50,6 +50,7 @@ import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Cast
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Lock
@@ -89,6 +90,8 @@ class MainActivity : ComponentActivity() {
     private var sharedUris by mutableStateOf<List<Uri>>(emptyList())
     /** A web link shared from a browser or other app, waiting for a device to be picked. */
     private var sharedLink by mutableStateOf<String?>(null)
+    /** Text shared or selected in another app, waiting for a device to be picked. */
+    private var sharedText by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -120,9 +123,10 @@ class MainActivity : ComponentActivity() {
                     else permissions.launch(needed.toTypedArray())
                 }
                 Box(Modifier.fillMaxSize()) {
-                    MainScreen(sharedUris = sharedUris, sharedLink = sharedLink, onClearShared = {
+                    MainScreen(sharedUris = sharedUris, sharedLink = sharedLink, sharedText = sharedText, onClearShared = {
                         sharedUris = emptyList()
                         sharedLink = null
+                        sharedText = null
                     })
                     TrackpadOverlay()
                 }
@@ -173,11 +177,19 @@ class MainActivity : ComponentActivity() {
         if (uris.isNotEmpty()) {
             sharedUris = uris
             sharedLink = null
+            sharedText = null
         } else if (intent?.action == Intent.ACTION_SEND) {
-            intent.getStringExtra(Intent.EXTRA_TEXT)?.let(::firstWebLink)?.let {
-                sharedLink = it
-                sharedUris = emptyList()
-            }
+            // Shared text with a web link in it opens that link; any other text goes to the clipboard.
+            val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() } ?: return
+            sharedLink = firstWebLink(text)
+            sharedText = if (sharedLink == null) text else null
+            sharedUris = emptyList()
+        } else if (intent?.action == Intent.ACTION_PROCESS_TEXT) {
+            // "BubbleDrop" in another app's text-selection menu: the selection goes to the clipboard as it is.
+            val text = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()?.takeIf { it.isNotBlank() } ?: return
+            sharedText = text
+            sharedLink = null
+            sharedUris = emptyList()
         }
     }
 
@@ -189,7 +201,7 @@ class MainActivity : ComponentActivity() {
 
 
 @Composable
-private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared: () -> Unit) {
+private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, sharedText: String?, onClearShared: () -> Unit) {
     val context = LocalContext.current
     val ios = Ios.colors
     val peers by Graph.discovery.peers.collectAsState()
@@ -239,7 +251,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
             onConfirmed = { startMirror(peer) })
     }
 
-    val sharing = sharedUris.isNotEmpty() || sharedLink != null
+    val sharing = sharedUris.isNotEmpty() || sharedLink != null || sharedText != null
 
     // The Mac asked (from its widget) to show this screen: offer the system's consent dialog.
     val mirrorRequest by MirrorRequests.pending.collectAsState()
@@ -276,6 +288,9 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
             if (Graph.trust.acceptsPairing) Graph.pairSuggestions.pair(peer)
         } else if (sharedLink != null) {
             Graph.scope.launch { Graph.sender.sendLink(peer, sharedLink) }
+            onClearShared()
+        } else if (sharedText != null) {
+            Graph.scope.launch { Graph.sender.sendText(peer, sharedText) }
             onClearShared()
         } else if (sharedUris.isNotEmpty()) {
             send(peer, sharedUris)
@@ -332,7 +347,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
             }
 
             if (sharing) {
-                item(key = "share") { ShareBanner(sharedUris.size, sharedLink, onClearShared) }
+                item(key = "share") { ShareBanner(sharedUris.size, sharedLink, sharedText, onClearShared) }
             } else {
                 item(key = "hero") { HeroSection(running) }
             }
@@ -453,13 +468,38 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, onClearShared
                 item(key = "hero") { HeroSection(running) }
             }
 
+            // The paired device, when it's nearby, can be handed this phone's clipboard.
+            if (!sharing) nearby.firstOrNull { p -> trusted.any { it.fingerprint == p.fingerprint } }?.let { peer ->
+                item(key = "clipboard") {
+                    GroupedSection(
+                        header = "Clipboard",
+                        footer = "Puts the text you last copied on this phone onto ${peer.name}'s clipboard, ready to paste there.",
+                    ) {
+                        ListRow(
+                            title = "Send Clipboard",
+                            subtitle = peer.name,
+                            leading = { IconTile(Icons.Rounded.ContentPaste, ios.orange) },
+                            chevron = true,
+                            onClick = {
+                                val text = Texts.clipboard(context)
+                                if (text == null) {
+                                    android.widget.Toast.makeText(context, "Copy some text first", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Graph.scope.launch { Graph.sender.sendText(peer, text) }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+
             // A paired Mac that's nearby can be driven from this screen.
             nearby.firstOrNull { p -> p.platform == "macos" && trusted.any { it.fingerprint == p.fingerprint } }?.let { mac ->
                 item(key = "trackpad") {
                     GroupedSection(
                         header = "Trackpad",
                         footer = "Move ${mac.name}'s pointer, click and scroll from this phone. " +
-                            "Turn on \"Use phone as trackpad\" in BubbleDrop on the Mac first.",
+                            "Turn on \"Use phone as trackpad and keyboard\" in BubbleDrop on the Mac first.",
                     ) {
                         ListRow(
                             title = "Use as Trackpad",
@@ -688,13 +728,20 @@ private fun RadarAvatar(active: Boolean) {
 }
 
 @Composable
-private fun ShareBanner(count: Int, link: String?, onCancel: () -> Unit) {
+private fun ShareBanner(count: Int, link: String?, text: String?, onCancel: () -> Unit) {
     val ios = Ios.colors
     GroupedSection(footer = "Choose a nearby device below.") {
         ListRow(
-            title = if (link != null) "Open Link on a Device" else if (count == 1) "Send 1 Item" else "Send $count Items",
-            subtitle = link ?: "Ready to share with BubbleDrop",
-            leading = { IconTile(if (link != null) Icons.Rounded.Link else Icons.Rounded.Description, ios.blue) },
+            title = if (link != null) "Open Link on a Device" else if (text != null) "Copy Text to a Device"
+                else if (count == 1) "Send 1 Item" else "Send $count Items",
+            subtitle = link ?: text?.let(Texts::preview) ?: "Ready to share with BubbleDrop",
+            leading = {
+                IconTile(
+                    if (link != null) Icons.Rounded.Link else if (text != null) Icons.Rounded.ContentPaste
+                    else Icons.Rounded.Description,
+                    ios.blue,
+                )
+            },
             trailing = { TextAction("Cancel", style = IosType.body, onClick = onCancel) },
         )
     }
@@ -784,8 +831,10 @@ private fun TransferRow(transfer: Transfer, divider: Boolean) {
     val ios = Ios.colors
     val status = transfer.status
     val link = transfer.link
+    val text = transfer.text
     val (icon, tint) = when {
         status is Transfer.Status.Failed -> Icons.Rounded.PriorityHigh to ios.red
+        text != null -> Icons.Rounded.ContentPaste to ios.orange
         link != null -> Icons.Rounded.Link to ios.indigo
         transfer.incoming -> Icons.Rounded.ArrowDownward to ios.green
         else -> Icons.Rounded.ArrowUpward to ios.blue
@@ -793,12 +842,14 @@ private fun TransferRow(transfer: Transfer, divider: Boolean) {
     val subtitle = when (status) {
         is Transfer.Status.Failed -> status.message
         Transfer.Status.Waiting -> when {
-            link != null -> "Sending to ${transfer.peerName}…"
+            link != null || text != null -> "Sending to ${transfer.peerName}…"
             transfer.incoming -> "Waiting…"
             else -> "Waiting for ${transfer.peerName} to accept…"
         }
         Transfer.Status.Active -> "${formatBytes(transfer.doneBytes)} of ${formatBytes(transfer.totalBytes)}"
         Transfer.Status.Done -> when {
+            text != null && transfer.incoming -> "From ${transfer.peerName} · copied to the clipboard"
+            text != null -> "Copied to ${transfer.peerName}'s clipboard"
             link != null && transfer.incoming -> "From ${transfer.peerName}"
             link != null && transfer.linkOpened -> "Opened on ${transfer.peerName}"
             link != null -> "Sent to ${transfer.peerName}"
@@ -807,6 +858,12 @@ private fun TransferRow(transfer: Transfer, divider: Boolean) {
         }
     }
     val open: (() -> Unit)? = when {
+        // Tapping received text copies it again (something else may have been copied since).
+        text != null -> if (transfer.incoming && status == Transfer.Status.Done) ({
+            if (Texts.copy(context, text)) {
+                android.widget.Toast.makeText(context, "Copied", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }) else null
         link != null -> ({ runCatching { context.startActivity(Links.viewIntent(link)) } })
         transfer.incoming && status == Transfer.Status.Done -> ({ openReceived(context, transfer) })
         else -> null
@@ -816,7 +873,7 @@ private fun TransferRow(transfer: Transfer, divider: Boolean) {
         subtitle = subtitle,
         subtitleColor = if (status is Transfer.Status.Failed) ios.red else ios.secondaryLabel,
         leading = { IconTile(icon, tint) },
-        trailing = if (status == Transfer.Status.Done && link == null) ({
+        trailing = if (status == Transfer.Status.Done && link == null && text == null) ({
             Icon(Icons.Rounded.CheckCircle, null, tint = ios.green, modifier = Modifier.size(20.dp))
         }) else null,
         chevron = open != null,

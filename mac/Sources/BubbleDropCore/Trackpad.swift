@@ -9,6 +9,16 @@ public struct TrackpadRequest: Codable, Sendable {
     }
 }
 
+/// Body of the `200` answer to `POST /api/v2/trackpad`: what this Mac can do with the packets.
+public struct TrackpadAccepted: Codable, Sendable {
+    /// This Mac types text packets and presses the typing keys.
+    public var keyboard: Bool
+
+    public init(keyboard: Bool = true) {
+        self.keyboard = keyboard
+    }
+}
+
 /// The packets a phone sends after `POST /api/v2/trackpad` is accepted (PROTOCOL.md "Trackpad"):
 /// a 3-byte header (type, payload length; big-endian) then the payload.
 public final class TrackpadStream: @unchecked Sendable {
@@ -32,14 +42,22 @@ public final class TrackpadStream: @unchecked Sendable {
         case end = 2
     }
 
-    /// The buttons under the phone's trackpad.
-    public enum MediaKey: UInt8, Sendable {
+    /// The buttons under the phone's trackpad, and the keys of its keyboard that aren't text.
+    public enum Key: UInt8, Sendable {
         case volumeUp = 0
         case volumeDown = 1
         case mute = 2
         case brightnessUp = 3
         case brightnessDown = 4
         case playPause = 5
+        case returnKey = 6
+        case delete = 7
+        case escape = 8
+        case tab = 9
+        case left = 10
+        case right = 11
+        case up = 12
+        case down = 13
     }
 
     public enum Event: Sendable {
@@ -54,8 +72,10 @@ public final class TrackpadStream: @unchecked Sendable {
         /// Two fingers pinched. `magnification` is how much to zoom since the last event: 1 doubles
         /// the size, negative zooms out.
         case zoom(ZoomPhase, magnification: Double)
-        /// One of the volume, brightness or play buttons was pressed.
-        case key(MediaKey)
+        /// One of the volume, brightness or play buttons, or a typing key, was pressed.
+        case key(Key)
+        /// Text typed on the phone's keyboard. A newline is the Return key.
+        case text(String)
     }
 
     /// The phone sends something at least every 2 s; this much silence means it's gone.
@@ -100,7 +120,9 @@ public final class TrackpadStream: @unchecked Sendable {
                       let amount = Self.float(payload.dropFirst()) else { continue }
                 return .zoom(phase, magnification: Double(min(max(amount, -4), 4)))
             case 6:
-                if let first = payload.first, let key = MediaKey(rawValue: first) { return .key(key) }
+                if let first = payload.first, let key = Key(rawValue: first) { return .key(key) }
+            case 7:
+                if let text = String(data: payload, encoding: .utf8), !text.isEmpty { return .text(text) }
             default:
                 // 0 is the keepalive; anything newer than this Mac knows is skipped.
                 continue

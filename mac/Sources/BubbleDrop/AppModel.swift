@@ -25,6 +25,8 @@ struct Transfer: Identifiable {
     var link: URL?
     /// For links: whether the receiver opened it right away (otherwise it showed a notification).
     var linkOpened = false
+    /// Set when this transfer is text for the clipboard rather than files.
+    var text: String?
     /// When bytes started moving, and how many had moved by then; for speed and time left.
     var startedAt: Date?
     var startBytes: Int64 = 0
@@ -119,6 +121,9 @@ final class AppModel: ObservableObject {
             }
             server.linkHandler = { sender, url in
                 await AppModel.shared.open(url, from: sender)
+            }
+            server.textHandler = { sender, text in
+                await AppModel.shared.copy(text, from: sender)
             }
             server.mirrorHandler = { sender, stream in
                 await MirrorViewer.run(sender: sender, stream: stream)
@@ -430,6 +435,80 @@ final class AppModel: ObservableObject {
                 update(id) { $0.status = .failed(error.localizedDescription) }
             }
         }
+    }
+
+    // MARK: Text
+
+    /// A paired device sent text: put it on the clipboard and confirm briefly.
+    private func copy(_ text: String, from sender: DeviceInfo) -> Bool {
+        let copied = Self.setClipboard(text)
+        let id = UUID().uuidString
+        upsert(Transfer(id: id, direction: .incoming, peerName: sender.name, peerPlatform: sender.platform,
+                        summary: Self.preview(text), totalBytes: 0,
+                        status: copied ? .done : .failed("Couldn't copy the text"), text: text))
+        if offer == nil, shareFiles.isEmpty, shareLink == nil {
+            spotlightId = id
+            DropPanel.shared.present(focus: false)
+            hideSpotlight(id, after: 3)
+        }
+        return copied
+    }
+
+    /// The text on this Mac's clipboard, if there is any.
+    var clipboardText: String? {
+        NSPasteboard.general.string(forType: .string).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Sends what's on this Mac's clipboard to [peer]'s clipboard.
+    func sendClipboard(to peer: Peer) {
+        guard let text = clipboardText else {
+            let id = UUID().uuidString
+            upsert(Transfer(id: id, direction: .outgoing, peerName: peer.name, peerPlatform: peer.platform,
+                            summary: "Clipboard", totalBytes: 0,
+                            status: .failed("There's no text on the clipboard. Copy some text first."), text: ""))
+            return
+        }
+        sendText(text, to: peer)
+    }
+
+    func sendText(_ text: String, to peer: Peer, repaired: Bool = false) {
+        // Nothing is shared with an unpaired device: pair first, then send.
+        guard isPaired(peer) else { return pair(peer) { AppModel.shared.sendText(text, to: peer) } }
+        let id = UUID().uuidString
+        spotlightId = id
+        DropPanel.shared.present(focus: false)
+        upsert(Transfer(id: id, direction: .outgoing, peerName: peer.name, peerPlatform: peer.platform,
+                        summary: Self.preview(text), totalBytes: 0, status: .waiting, text: text))
+        guard let client else { return }
+        Task {
+            do {
+                try await client.send(text: text, to: peer.endpoint, confirmPairing: nil)
+                update(id) { $0.status = .done }
+            } catch where !repaired && Self.needsRepair(error) {
+                update(id) { $0.status = .failed("\(peer.name) needs to pair again") }
+                pair(peer) { AppModel.shared.sendText(text, to: peer, repaired: true) }
+            } catch {
+                update(id) { $0.status = .failed(error.localizedDescription) }
+            }
+        }
+    }
+
+    /// Puts a text transfer's text back on the clipboard.
+    func copyAgain(_ transfer: Transfer) {
+        if let text = transfer.text, !text.isEmpty { _ = Self.setClipboard(text) }
+    }
+
+    private static func setClipboard(_ text: String) -> Bool {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
+    }
+
+    /// The start of [text] on one line, for a transfer's title.
+    private static func preview(_ text: String) -> String {
+        let line = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return line.count > 80 ? line.prefix(80) + "…" : (line.isEmpty ? "Text" : line)
     }
 
     // MARK: Share menu

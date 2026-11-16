@@ -116,6 +116,31 @@ public final class BubbleDropClient {
         return (try? JSONDecoder().decode(LinkResponse.self, from: data))?.opened ?? false
     }
 
+    /// Puts [text] on the receiver's clipboard.
+    public func send(text: String, to endpoint: NWEndpoint,
+                     confirmPairing: ((PairingPrompt) async -> Bool)?,
+                     progress: @escaping (SendStage) -> Void = { _ in }) async throws {
+        guard text.utf8.count <= maxClipboardTextBytes else {
+            throw BubbleDropError.unsupportedItem("That's too much text to send (the limit is 256 KB).")
+        }
+        progress(.connecting)
+        let (_, serverFingerprint) = try await connectPaired(endpoint, confirmPairing: confirmPairing) {
+            progress(.pairing)
+        }
+        let request = TextRequest(sender: device, text: text)
+        let (status, data, _) = try await roundTrip(endpoint, pinned: serverFingerprint, path: "/api/v2/text",
+                                                    body: try JSONEncoder().encode(request), timeout: 30,
+                                                    allowErrorStatus: true)
+        switch status {
+        case 200: break
+        case 401: throw BubbleDropError.pairingRequired
+        case 404: throw BubbleDropError.unsupportedItem("The other device's BubbleDrop is too old to receive text. Update it.")
+        case 503: throw BubbleDropError.receivingOff
+        default: throw BubbleDropError.http(status, Self.errorMessage(data))
+        }
+        progress(.done)
+    }
+
     /// Posts [body] to a paired device, accepting only its pinned certificate. Returns the HTTP status.
     @discardableResult
     public func post<Body: Encodable>(_ body: Body, path: String, to endpoint: NWEndpoint,

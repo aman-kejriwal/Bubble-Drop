@@ -344,9 +344,11 @@ private struct TransferContent: View {
     private var title: String {
         switch transfer.status {
         case .waiting: incoming ? "Connecting…"
-            : transfer.link != nil ? "Sending to \(transfer.peerName)" : "Waiting for \(transfer.peerName)"
+            : transfer.link != nil || transfer.text != nil ? "Sending to \(transfer.peerName)"
+            : "Waiting for \(transfer.peerName)"
         case .active: incoming ? "Receiving from \(transfer.peerName)" : "Sending to \(transfer.peerName)"
         case .done where transfer.link != nil: incoming || transfer.linkOpened ? "Opened" : "Sent"
+        case .done where transfer.text != nil: incoming ? "Copied" : "Sent"
         case .done: incoming ? "Received" : "Sent"
         case .failed: incoming ? "Couldn't receive" : "Couldn't send"
         }
@@ -355,7 +357,7 @@ private struct TransferContent: View {
     private var detail: String {
         switch transfer.status {
         case .waiting:
-            return incoming || transfer.link != nil ? "" : "They'll be asked to accept"
+            return incoming || transfer.link != nil || transfer.text != nil ? "" : "They'll be asked to accept"
         case .active:
             var text = "\(formatBytes(transfer.doneBytes)) of \(formatBytes(transfer.totalBytes))"
             if let started = transfer.startedAt {
@@ -377,6 +379,9 @@ private struct TransferContent: View {
             if incoming { return "Link from \(transfer.peerName)" }
             return transfer.linkOpened ? "In \(transfer.peerName)'s browser"
                 : "\(transfer.peerName) got a notification to open it"
+        case .done where transfer.text != nil:
+            return incoming ? "Text from \(transfer.peerName) is on the clipboard"
+                : "On \(transfer.peerName)'s clipboard"
         case .done:
             return incoming ? "From \(transfer.peerName) · \(formatBytes(transfer.totalBytes))"
                 : "Delivered to \(transfer.peerName)"

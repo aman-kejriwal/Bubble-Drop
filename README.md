@@ -18,6 +18,8 @@ open build/BubbleDrop.app # menu-bar icon (paper plane)
 - Pick a nearby device → **Send…**, or drop files or folders onto its row. Folders arrive with
   their subfolders intact.
 - Incoming offers show an Accept/Decline prompt; files go to `~/Downloads`.
+- The clipboard button on a paired device's row sends the text on this Mac's clipboard to that
+  device's clipboard. Text sent from the phone lands on this Mac's clipboard, ready to paste.
 - macOS will ask for Local Network access the first time. Allow it. Requires macOS 15+.
 
 CLI (handy for testing):
@@ -26,6 +28,7 @@ CLI (handy for testing):
 build/bubbledrop-cli serve --auto-accept --dir /tmp/in   # receive (auto-confirms pairing too)
 build/bubbledrop-cli browse                               # list devices
 build/bubbledrop-cli send "Pixel 9a" photo.jpg            # by name, or host:port
+build/bubbledrop-cli text "Pixel 9a" "some text"          # put text on its clipboard
 build/bubbledrop-cli paired [--forget FINGERPRINT]        # list / remove paired devices
 # --state DIR gives an instance its own identity, e.g. to test two "devices" on one Mac
 ```
@@ -46,12 +49,20 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
   **Share → BubbleDrop** from any app.
 - Incoming offers show a dialog or a heads-up notification with Accept/Decline;
   files go to `Download/BubbleDrop`.
+- **Send Clipboard** (shown when the paired device is nearby) puts the text you last copied on
+  the phone onto the other device's clipboard. You can also select text in any app and pick
+  **BubbleDrop** from the selection menu, or share text to BubbleDrop. Text sent from the Mac is
+  copied to the phone's clipboard and announced in a notification.
 - **Use as Trackpad** (shown when the paired Mac is nearby) turns the phone into the Mac's
   trackpad: slide to move the pointer, tap to click, two fingers to scroll, two-finger tap to
-  right-click, tap then slide to drag, pinch to zoom, three fingers left or right to switch
+  right-click, tap then slide to drag (lift and touch again within a moment to keep dragging),
+  pinch to zoom, three fingers left or right to switch
   spaces and full-screen apps, three fingers up for Mission Control and down for the front
-  app's windows. The buttons under the pad set the Mac's brightness and volume and play or
-  pause its media. On the Mac, turn on **Use phone as trackpad** in the BubbleDrop menu and
+  app's windows. A scroll flicked with two fingers carries on and slows down, and clicks,
+  drags and swipes tick under your finger. The buttons under the pad set the Mac's brightness and volume and play or
+  pause its media. The keyboard button at the top opens the phone's keyboard to type on the
+  Mac, with Esc, Tab and arrow keys under the pad. On the Mac, turn on **Use phone as trackpad
+  and keyboard** in the BubbleDrop menu and
   allow BubbleDrop under Privacy & Security → Accessibility.
 
 ## Folder sync

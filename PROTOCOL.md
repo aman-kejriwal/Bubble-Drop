@@ -164,6 +164,21 @@ background).
 | 400    | not an http(s) URL              |
 | 503    | receiving is turned off         |
 
+### `POST /api/v2/text` (paired clients only)
+Body: `{ "sender": DeviceInfo, "text": "…" }`. Puts the text on the receiver's clipboard, with no
+accept prompt (the sender is already paired). The receiver shows briefly that text arrived and
+from whom. The text must not be empty and is at most 256 KiB of UTF-8. Response `200 {}`.
+
+| status | meaning                                             |
+|--------|-----------------------------------------------------|
+| 400    | empty text, or more than 256 KiB                    |
+| 404    | the receiver predates `/text`                       |
+| 500    | the receiver couldn't write its clipboard           |
+| 503    | receiving is turned off                             |
+
+Text is only ever sent when the user asks: neither app watches its clipboard or sends it on its
+own (Android also only lets an app read the clipboard while it's on screen).
+
 ### `POST /api/v2/mirror` (paired clients only)
 Body: `{ "sender": DeviceInfo }`. Starts showing the sender's screen on the receiver. The receiver
 answers `200 {}` **without** `Connection: close` and keeps the connection open; the sender then
@@ -202,9 +217,11 @@ if receiving is off.
 ## Trackpad
 
 ### `POST /api/v2/trackpad` (phone → Mac, paired clients only)
-Body: `{ "sender": DeviceInfo }`. Makes the phone the Mac's trackpad. Like `/mirror`, the Mac
-answers `200 {}` **without** `Connection: close` and keeps the connection open; the phone then
-streams packets on it until either side closes the connection.
+Body: `{ "sender": DeviceInfo }`. Makes the phone the Mac's trackpad and keyboard. Like
+`/mirror`, the Mac answers `200` **without** `Connection: close` and keeps the connection open;
+the phone then streams packets on it until either side closes the connection. The `200` body is
+`{ "keyboard": true }` if the Mac types text packets (type `7`) and presses keys `6`–`13`; a Mac
+that answers `{}` only takes the trackpad, and the phone doesn't offer its keyboard.
 
 | status | meaning                                                                          |
 |--------|----------------------------------------------------------------------------------|
@@ -226,7 +243,8 @@ Each packet is a 3-byte big-endian header followed by the payload:
 | `3`  | `dx`, `dy`: two big-endian float32        | two fingers moved; scroll                       |
 | `4`  | direction: `0` left, `1` right, `2` up, `3` down | three fingers swiped that way; sent once per swipe |
 | `5`  | phase (`0` begin, `1` change, `2` end), magnification: big-endian float32 | two fingers pinched; zoom |
-| `6`  | key: `0` volume up, `1` volume down, `2` mute, `3` brightness up, `4` brightness down, `5` play/pause | a button under the trackpad was pressed |
+| `6`  | key: `0` volume up, `1` volume down, `2` mute, `3` brightness up, `4` brightness down, `5` play/pause, `6` Return, `7` Delete (backspace), `8` Escape, `9` Tab, `10` left, `11` right, `12` up, `13` down | a button under the trackpad, or a key of the phone's keyboard, was pressed |
+| `7`  | UTF-8 text                                | typed on the phone's keyboard; the Mac types it |
 
 Distances are in the phone's density-independent pixels (160 per inch), y down. The Mac turns
 them into pointer movement (speeding up fast swipes) and scrolling in the direction of its own
@@ -239,7 +257,11 @@ Settings → Keyboard → Keyboard Shortcuts. A pinch is sent as a begin, any nu
 end; each change's magnification is the zoom since the one before, where 1 doubles the size and
 negative values zoom out, and the Mac passes it on as its own trackpad's magnify gesture. Keys act
 like the Mac keyboard's top row; brightness moves the built-in display one of its 16 steps. If a
-session ends in the middle of a pinch the Mac ends the gesture. Unknown types are skipped, so newer phones can send more.
+session ends in the middle of a pinch the Mac ends the gesture. Text is typed one character at
+a time into whatever has the Mac's keyboard, whatever its keyboard layout; a newline in it is
+the Return key, a tab the Tab key, and other control characters are dropped. A phone whose
+keyboard rewrites the word being typed sends Delete keys for the part that changed, then the
+new text. Unknown types and keys are skipped, so newer phones can send more.
 
 Both sides send a keepalive at least every 2 seconds when they have nothing else to send (the
 Mac sends nothing but keepalives). The Mac ends a session that's silent for 10 seconds, the phone

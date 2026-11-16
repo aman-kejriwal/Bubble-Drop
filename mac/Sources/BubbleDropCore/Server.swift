@@ -35,6 +35,8 @@ public final class BubbleDropServer {
     public var askHandler: (AskRequest) async -> Bool = { _ in false }
     /// Opens a link from a paired device; returns whether it was opened.
     public var linkHandler: (DeviceInfo, URL) async -> Bool = { _, _ in false }
+    /// Puts text from a paired device on the clipboard; returns whether it was copied.
+    public var textHandler: (DeviceInfo, String) async -> Bool = { _, _ in false }
     /// Shows a paired device's screen; returns when the viewer is closed or the stream ends.
     public var mirrorHandler: (DeviceInfo, MirrorStream) async -> Void = { _, _ in }
     /// Moves this Mac's pointer for a paired phone; returns when the phone stops or the stream is closed.
@@ -167,6 +169,10 @@ public final class BubbleDropServer {
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))
                 try await handleLink(try JSONDecoder().decode(LinkRequest.self, from: body), client, wire)
+            case "/api/v2/text":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                let body = try await wire.readBody(length: Int(head.contentLength))
+                try await handleText(try JSONDecoder().decode(TextRequest.self, from: body), client, wire)
             case "/api/v2/notify":
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))
@@ -235,6 +241,22 @@ public final class BubbleDropServer {
         }
     }
 
+    private func handleText(_ request: TextRequest, _ client: String, _ wire: Wire) async throws {
+        guard receivingEnabled else {
+            return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
+        }
+        guard !request.text.isEmpty, request.text.utf8.count <= maxClipboardTextBytes else {
+            return try await wire.sendResponse(status: 400, json: ErrorBody(error: request.text.isEmpty
+                ? "there's no text to copy" : "that's too much text to copy"))
+        }
+        var sender = request.sender
+        if let known = trust.device(for: client) { sender.name = known.name }
+        guard await textHandler(sender, request.text) else {
+            return try await wire.sendResponse(status: 500, json: ErrorBody(error: "couldn't copy the text"))
+        }
+        try await wire.sendResponse(status: 200, json: EmptyBody())
+    }
+
     private func handleLink(_ request: LinkRequest, _ client: String, _ wire: Wire) async throws {
         guard receivingEnabled else {
             return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
@@ -297,7 +319,7 @@ public final class BubbleDropServer {
         }
         var sender = request.sender
         if let known = trust.device(for: client) { sender.name = known.name }
-        try await wire.sendResponse(status: 200, json: EmptyBody(), final: false)
+        try await wire.sendResponse(status: 200, json: TrackpadAccepted(), final: false)
         let stream = TrackpadStream(wire)
         // A phone that reconnects (say after a Wi-Fi blip) takes over from its stale session.
         let previous: TrackpadStream? = locked {

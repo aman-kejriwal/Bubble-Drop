@@ -217,11 +217,12 @@ private fun TransferCard(transfer: Transfer, onClose: () -> Unit) {
         val title = when (transfer.status) {
             Transfer.Status.Waiting -> when {
                 transfer.incoming -> "Connecting…"
-                transfer.link != null -> "Sending to ${transfer.peerName}"
+                transfer.link != null || transfer.text != null -> "Sending to ${transfer.peerName}"
                 else -> "Waiting for ${transfer.peerName}"
             }
             Transfer.Status.Active -> if (transfer.incoming) "Receiving from ${transfer.peerName}" else "Sending to ${transfer.peerName}"
             Transfer.Status.Done -> when {
+                transfer.text != null -> if (transfer.incoming) "Copied" else "Sent"
                 transfer.link != null && transfer.incoming -> "Link received"
                 transfer.link != null && transfer.linkOpened -> "Opened"
                 transfer.incoming -> "Received"
@@ -236,7 +237,8 @@ private fun TransferCard(transfer: Transfer, onClose: () -> Unit) {
             maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(8.dp))
         val detail = when (val status = transfer.status) {
-            Transfer.Status.Waiting -> if (transfer.incoming || transfer.link != null) "" else "They'll be asked to accept"
+            Transfer.Status.Waiting ->
+                if (transfer.incoming || transfer.link != null || transfer.text != null) "" else "They'll be asked to accept"
             Transfer.Status.Active -> buildString {
                 append("${formatBytes(transfer.doneBytes)} of ${formatBytes(transfer.totalBytes)}")
                 if (speed > 0) {
@@ -246,6 +248,8 @@ private fun TransferCard(transfer: Transfer, onClose: () -> Unit) {
                 }
             }
             Transfer.Status.Done -> when {
+                transfer.text != null && transfer.incoming -> "Text from ${transfer.peerName} is on the clipboard"
+                transfer.text != null -> "On ${transfer.peerName}'s clipboard"
                 transfer.link != null && transfer.linkOpened -> "In ${transfer.peerName}'s browser"
                 transfer.link != null && !transfer.incoming -> "${transfer.peerName} got a notification to open it"
                 transfer.incoming -> "From ${transfer.peerName} · ${formatBytes(transfer.totalBytes)}"

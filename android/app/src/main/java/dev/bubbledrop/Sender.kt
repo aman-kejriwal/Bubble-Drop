@@ -56,6 +56,34 @@ class Sender(
         }
     }
 
+    /** Puts [text] on [peer]'s clipboard. Blocking; call from a background thread. */
+    fun sendText(peer: Peer, text: String) {
+        val transferId = UUID.randomUUID().toString()
+        transfers.upsert(
+            Transfer(
+                id = transferId, incoming = false, peerName = peer.name, peerPlatform = peer.platform,
+                summary = Texts.preview(text), totalBytes = 0, status = Transfer.Status.Waiting, text = text,
+            )
+        )
+        try {
+            if (text.toByteArray().size > MAX_CLIPBOARD_TEXT_BYTES) {
+                throw IOException("That's too much text to send (the limit is 256 KB).")
+            }
+            val pinned = connectPaired(peer)
+            val response = postJson(peer, pinned, "/api/v2/text", TextRequest(device, text).toJson(), readTimeoutMs = 30_000)
+            when (response.status) {
+                200 -> Unit
+                401 -> throw IOException("${peer.name} no longer trusts this device. Unpair it and pair again.")
+                404 -> throw IOException("BubbleDrop on ${peer.name} is too old to receive text. Update it.")
+                503 -> throw IOException("${peer.name} has receiving turned off.")
+                else -> throw IOException(response.json.optString("error", "Request failed (${response.status})"))
+            }
+            transfers.update(transferId) { it.copy(status = Transfer.Status.Done) }
+        } catch (e: Exception) {
+            transfers.update(transferId) { it.copy(status = Transfer.Status.Failed(e.message ?: "Send failed")) }
+        }
+    }
+
     /** Sends every file in the folder [tree] (from "Open folder"), keeping its structure. Blocking. */
     fun sendFolder(peer: Peer, tree: Uri) = send(peer) { describeTree(tree) }
 
