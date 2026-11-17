@@ -31,6 +31,8 @@
 	</array>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>BubbleDrop turns this Mac's Bluetooth on and off when you ask from your phone's trackpad screen.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>BubbleDrop finds nearby phones and computers on your Wi-Fi to send and receive files.</string>
 	<key>NSBonjourServices</key>

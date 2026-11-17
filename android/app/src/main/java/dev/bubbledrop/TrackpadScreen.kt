@@ -3,9 +3,16 @@ package dev.bubbledrop
 import android.view.HapticFeedbackConstants
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.rounded.Bluetooth
+import androidx.compose.material.icons.rounded.BluetoothDisabled
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.width
@@ -116,6 +123,20 @@ fun TrackpadOverlay() {
                 Text("Trackpad", style = IosType.headline, color = ios.label)
                 Text(name, style = IosType.footnote, color = ios.secondaryLabel, maxLines = 1)
             }
+            val macBluetooth by Trackpad.macBluetooth.collectAsState()
+            macBluetooth?.takeIf { active != null }?.let { on ->
+                // The Mac's Bluetooth: blue while it's on, grey with a slash while it's off.
+                Icon(
+                    if (on) Icons.Rounded.Bluetooth else Icons.Rounded.BluetoothDisabled,
+                    if (on) "Turn off the Mac's Bluetooth" else "Turn on the Mac's Bluetooth",
+                    tint = if (on) ios.blue else ios.secondaryLabel,
+                    modifier = Modifier.clip(CircleShape).clickable {
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        Trackpad.setMacBluetooth(!on)
+                    }.padding(8.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+            }
             if (active?.keyboard == true) {
                 // What the phone's keyboard types into; it has nothing to show.
                 AndroidView(factory = { keyboard }, modifier = Modifier.size(1.dp))
@@ -130,6 +151,7 @@ fun TrackpadOverlay() {
             }
             TextAction("Done", style = IosType.headline) { Trackpad.close() }
         }
+        if (active != null) TypedText()
         Box(
             Modifier.fillMaxWidth().weight(1f).padding(horizontal = 12.dp)
                 .clip(RoundedCornerShape(28.dp)).background(ios.cell)
@@ -163,7 +185,6 @@ fun TrackpadOverlay() {
                 }
                 Trackpad.State.Idle -> Unit
             }
-            if (active != null) TypedPreview(Modifier.align(Alignment.TopCenter).padding(horizontal = 20.dp, vertical = 14.dp))
         }
         if (state is Trackpad.State.Active) {
             Row(
@@ -191,31 +212,49 @@ fun TrackpadOverlay() {
     }
 }
 
-/** How long the pad shows what was typed after the last key. */
-private const val TYPED_SHOWN_MS = 1500L
-
 /**
- * The end of what was just typed, on the pad for a moment after each key so you can see it
- * without looking up at the Mac. It takes no touches: the pad under it works as usual.
+ * What has been typed this session, in a strip above the pad so you can read it without looking
+ * up at the Mac: the word being typed stands out from the rest and a caret blinks after it. It
+ * follows the typing, scrolls to show the rest, and stays until it's cleared or the trackpad is
+ * closed. It sits outside the pad, so touching it never moves the pointer.
  */
 @Composable
-private fun TypedPreview(modifier: Modifier) {
+private fun TypedText() {
     val typed by Trackpad.typed.collectAsState()
-    LaunchedEffect(typed) {
-        if (typed.isNotEmpty()) {
-            delay(TYPED_SHOWN_MS)
-            Trackpad.clearTyped()
+    if (typed.isEmpty()) return
+    val ios = Ios.colors
+    val scroll = rememberScrollState()
+    // Keeps the newest line in view; scrolling back up to read lasts until the next key.
+    LaunchedEffect(typed, scroll.maxValue) { scroll.scrollTo(scroll.maxValue) }
+    val caretOn by produceState(true) {
+        while (true) {
+            delay(530)
+            value = !value
         }
     }
-    // What to keep showing while it fades out.
-    val last = remember { arrayOf("") }
-    if (typed.isNotEmpty()) last[0] = typed
-    val alpha by animateFloatAsState(if (typed.isEmpty()) 0f else 1f, label = "typed")
-    if (alpha == 0f) return
-    Text(
-        last[0], style = IosType.title2, color = Ios.colors.label, maxLines = 1,
-        overflow = TextOverflow.StartEllipsis, modifier = modifier.alpha(alpha),
-    )
+    // The word still being typed, with any spaces after it.
+    val word = typed.trimEnd().indexOfLast { it.isWhitespace() } + 1
+    val text = buildAnnotatedString {
+        withStyle(SpanStyle(color = ios.secondaryLabel)) { append(typed, 0, word) }
+        withStyle(SpanStyle(color = ios.label)) { append(typed, word, typed.length) }
+        withStyle(SpanStyle(color = ios.blue.copy(alpha = if (caretOn) 1f else 0f))) { append("▏") }
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
+            .clip(RoundedCornerShape(20.dp)).background(ios.cell),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            text, style = IosType.title3,
+            modifier = Modifier.weight(1f).heightIn(max = 104.dp).verticalScroll(scroll)
+                .padding(start = 16.dp, top = 12.dp, bottom = 12.dp),
+        )
+        Icon(
+            Icons.Rounded.Close, "Clear typed text", tint = ios.tertiaryLabel,
+            modifier = Modifier.padding(6.dp).clip(CircleShape).clickable { Trackpad.clearTyped() }
+                .padding(8.dp).size(18.dp),
+        )
+    }
 }
 
 @Composable

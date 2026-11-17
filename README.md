@@ -61,8 +61,13 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
   app's windows. A scroll flicked with two fingers carries on and slows down, and clicks,
   drags and swipes tick under your finger. The buttons under the pad set the Mac's brightness and volume and play or
   pause its media. The keyboard button at the top opens the phone's keyboard to type on the
-  Mac, with Esc, Tab and arrow keys under the pad; what you type shows on the pad for a moment.
-  While the trackpad is open the phone's volume buttons set the Mac's volume. On the Mac, turn on **Use phone as trackpad
+  Mac, with Esc, Tab and arrow keys under the pad; what you type stays in a strip above the pad, which
+  scrolls, until you clear it or close the trackpad.
+  While the trackpad is open the phone's volume buttons set the Mac's volume, and the
+  Bluetooth button at the top turns the Mac's Bluetooth on and off; turning it on also
+  connects the paired device you used last that's switched on and in range. **Add Trackpad
+  to Quick Settings** puts a **Mac Trackpad** tile in Quick Settings that opens the trackpad
+  straight away. On the Mac, turn on **Use phone as trackpad
   and keyboard** in the BubbleDrop menu and
   allow BubbleDrop under Privacy & Security → Accessibility.
 

@@ -245,6 +245,7 @@ Each packet is a 3-byte big-endian header followed by the payload:
 | `5`  | phase (`0` begin, `1` change, `2` end), magnification: big-endian float32 | two fingers pinched; zoom |
 | `6`  | key: `0` volume up, `1` volume down, `2` mute, `3` brightness up, `4` brightness down, `5` play/pause, `6` Return, `7` Delete (backspace), `8` Escape, `9` Tab, `10` left, `11` right, `12` up, `13` down | a button under the trackpad, or a key of the phone's keyboard, was pressed |
 | `7`  | UTF-8 text                                | typed on the phone's keyboard; the Mac types it |
+| `8`  | setting (`0` Bluetooth), on (`1`/`0`)     | phone → Mac: switch that setting of the Mac; Mac → phone: that setting is now on or off |
 
 Distances are in the phone's density-independent pixels (160 per inch), y down. The Mac turns
 them into pointer movement (speeding up fast swipes) and scrolling in the direction of its own
@@ -263,8 +264,16 @@ the Return key, a tab the Tab key, and other control characters are dropped. A p
 keyboard rewrites the word being typed sends Delete keys for the part that changed, then the
 new text. Unknown types and keys are skipped, so newer phones can send more.
 
-Both sides send a keepalive at least every 2 seconds when they have nothing else to send (the
-Mac sends nothing but keepalives). The Mac ends a session that's silent for 10 seconds, the phone
+The Mac sends packets too, framed the same way: keepalives, and a type `8` for each setting it
+can switch, when the session starts and whenever the setting changes (also when it's changed on
+the Mac itself). After the phone asks for a change the Mac always reports how the setting ended
+up. When the phone switches Bluetooth on, the Mac also connects a paired device if none has
+connected by itself after a few seconds: it briefly connects up to four of its paired devices,
+the most recently used first, reads each one's signal strength and keeps only the strongest (the
+nearest, as far as signal strength tells); devices that are off or out of range don't answer. The phone shows a switch for a setting only once the Mac has reported it, so a Mac that
+doesn't report one isn't asked to change it.
+
+Both sides send a keepalive at least every 2 seconds when they have nothing else to send. The Mac ends a session that's silent for 10 seconds, the phone
 after 8, so neither waits on a device that dropped off the network. When a session ends the Mac
 releases any button the phone was holding. A new request from the paired phone replaces its
 earlier session. Unpairing, or turning receiving or the trackpad setting off on the Mac, ends the

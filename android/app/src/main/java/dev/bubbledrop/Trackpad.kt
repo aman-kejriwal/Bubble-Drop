@@ -2,11 +2,17 @@ package dev.bubbledrop
 
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -65,6 +71,8 @@ object Trackpad {
     private const val TYPE_ZOOM = 5
     private const val TYPE_KEY = 6
     private const val TYPE_TEXT = 7
+    private const val TYPE_SETTING = 8
+    private const val SETTING_BLUETOOTH = 0
     /** The most text in one packet, in UTF-16 units; at most 3 bytes each, inside the 1024-byte payload. */
     private const val TEXT_CHUNK = 250
     /** The Mac drops a phone it hasn't heard from in 10 s. */
@@ -80,21 +88,76 @@ object Trackpad {
     @Volatile private var session: Session? = null
     private var lastPeer: Peer? = null
 
-    /** The most characters of what was typed that the pad shows. */
-    private const val TYPED_SHOWN = 40
+    /** The most characters of what was typed that are kept; the oldest go first. */
+    private const val TYPED_KEPT = 4000
+
+    private val _macBluetooth = MutableStateFlow<Boolean?>(null)
+    /** Whether the Mac's Bluetooth is on, once the Mac has said; null before, and for a Mac that doesn't. */
+    val macBluetooth: StateFlow<Boolean?> = _macBluetooth
+
+    /** Switches the Mac's Bluetooth. The Mac answers with how it ended up. */
+    fun setMacBluetooth(on: Boolean) {
+        _macBluetooth.value = on
+        send(packet(TYPE_SETTING, byteArrayOf(SETTING_BLUETOOTH.toByte(), if (on) 1 else 0)))
+    }
 
     private val _typed = MutableStateFlow("")
-    /** The end of what was just typed on the phone's keyboard, which the pad shows for a moment. */
+    /** What has been typed on the phone's keyboard this session, which the trackpad screen shows. */
     val typed: StateFlow<String> = _typed
 
-    /** The pad has shown what was typed for long enough. */
+    /** Empties what the trackpad screen shows as typed. */
     fun clearTyped() {
         _typed.value = ""
     }
 
+    /** How long the Quick Settings tile waits for the paired Mac to turn up nearby. */
+    private const val FIND_MS = 10_000L
+
+    /** The wait for the paired Mac to be found, when the tile opened the trackpad before it was. */
+    private var search: Job? = null
+
+    /** The paired Mac, if it's nearby. */
+    private fun pairedMac(peers: List<Peer>, trusted: List<TrustedDevice>): Peer? =
+        peers.firstOrNull { p -> p.platform == "macos" && trusted.any { it.fingerprint == p.fingerprint } }
+
+    /**
+     * Shows the trackpad screen and connects to the paired Mac, waiting a little for it to be
+     * found: the Quick Settings tile can open the app before it has looked around.
+     */
+    fun openPaired() {
+        pairedMac(Graph.discovery.peers.value, Graph.trust.devices.value)?.let { return open(it) }
+        search?.cancel()
+        session?.end()
+        session = null
+        lastPeer = null
+        _typed.value = ""
+        _macBluetooth.value = null
+        val name = Graph.trust.devices.value.firstOrNull()?.name
+        if (name == null) {
+            _state.value = State.Failed("", "Pair this phone with a Mac in BubbleDrop first.")
+            return
+        }
+        _state.value = State.Connecting(name)
+        search = Graph.scope.launch {
+            val mac = withTimeoutOrNull(FIND_MS) {
+                Graph.discovery.peers.combine(Graph.trust.devices, ::pairedMac).first { it != null }
+            }
+            // Closed, or opened some other way, while waiting.
+            if (!isActive) return@launch
+            if (mac != null) {
+                open(mac)
+            } else {
+                _state.value = State.Failed(name, "Couldn't find $name nearby. Check that BubbleDrop is open on it " +
+                    "and that it's on the same Wi-Fi as this phone.")
+            }
+        }
+    }
+
     /** Connects to [peer] and shows the trackpad screen. */
     fun open(peer: Peer) {
+        search?.cancel()
         _typed.value = ""
+        _macBluetooth.value = null
         session?.end()
         lastPeer = peer
         val next = Session(peer)
@@ -105,13 +168,15 @@ object Trackpad {
 
     /** Connects again after a failure, to wherever the Mac is now: it may have restarted on a new port. */
     fun retry() {
-        val last = lastPeer ?: return
+        val last = lastPeer ?: return openPaired()
         open(Graph.discovery.peers.value.firstOrNull { it.id == last.id } ?: last)
     }
 
     /** Ends the session and leaves the trackpad screen. */
     fun close() {
+        search?.cancel()
         _typed.value = ""
+        _macBluetooth.value = null
         session?.end()
         session = null
         _state.value = State.Idle
@@ -134,19 +199,14 @@ object Trackpad {
     fun key(key: Int) {
         when (key) {
             KEY_DELETE -> _typed.update { if (it.isEmpty()) it else it.substring(0, it.offsetByCodePoints(it.length, -1)) }
-            // The Mac's cursor has left what the pad was showing.
-            KEY_RETURN, KEY_ESCAPE, KEY_TAB, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN -> _typed.value = ""
+            KEY_RETURN -> typed("\n")
         }
         send(packet(TYPE_KEY, byteArrayOf(key.toByte())))
     }
 
     /** Text typed on the phone's keyboard, for the Mac to type. */
     fun text(text: String) {
-        _typed.update {
-            val end = (it + text).substringAfterLast('\n').takeLast(TYPED_SHOWN)
-            // Not half of an emoji at the cut.
-            if (end.isNotEmpty() && Character.isLowSurrogate(end[0])) end.drop(1) else end
-        }
+        typed(text)
         var start = 0
         while (start < text.length) {
             var end = minOf(start + TEXT_CHUNK, text.length)
@@ -155,6 +215,12 @@ object Trackpad {
             send(packet(TYPE_TEXT, text.substring(start, end).toByteArray(Charsets.UTF_8)))
             start = end
         }
+    }
+
+    private fun typed(text: String) = _typed.update {
+        val all = (it + text).takeLast(TYPED_KEPT)
+        // Not half of an emoji at the cut.
+        if (all.isNotEmpty() && Character.isLowSurrogate(all[0])) all.drop(1) else all
     }
 
     /** [clicks] is 1 for a single click, 2 for the second click of a double click. */
@@ -274,11 +340,20 @@ object Trackpad {
                 connected = true
                 if (!closed && session === this) _state.value = State.Active(peer.name, answer?.optBoolean("keyboard") == true)
 
-                // The Mac only sends keepalives; the read ends when it closes the connection or goes quiet.
+                // The Mac sends keepalives and the state of its settings, in packets like the phone's;
+                // the read ends when it closes the connection or goes quiet.
                 thread(name = "trackpad-input") {
                     runCatching {
-                        val buffer = ByteArray(64)
-                        while (input.read(buffer) >= 0) Unit
+                        val packets = DataInputStream(input)
+                        while (true) {
+                            val type = packets.readUnsignedByte()
+                            val payload = ByteArray(packets.readUnsignedShort())
+                            packets.readFully(payload)
+                            if (type == TYPE_SETTING && payload.size >= 2 && payload[0].toInt() == SETTING_BLUETOOTH &&
+                                session === this) {
+                                _macBluetooth.value = payload[1].toInt() == 1
+                            }
+                        }
                     }
                     fail("Lost the connection to ${peer.name}")
                 }

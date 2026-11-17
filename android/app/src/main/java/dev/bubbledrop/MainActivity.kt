@@ -181,6 +181,13 @@ class MainActivity : ComponentActivity() {
             Graph.pairSuggestions.pair()
             return
         }
+        if (intent?.getBooleanExtra(TrackpadTile.EXTRA_OPEN, false) == true) {
+            // The Quick Settings tile. Finding the Mac needs BubbleDrop on.
+            intent.removeExtra(TrackpadTile.EXTRA_OPEN)
+            if (!BubbleDropService.running.value) runCatching { BubbleDropService.start(this) }
+            Trackpad.openPaired()
+            return
+        }
         val uris = when (intent?.action) {
             Intent.ACTION_SEND -> listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
             Intent.ACTION_SEND_MULTIPLE ->
@@ -520,7 +527,16 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, sharedText: S
                             leading = { IconTile(Icons.Rounded.TouchApp, ios.teal) },
                             chevron = true,
                             onClick = { Trackpad.open(mac) },
+                            divider = BubbleDropTile.canRequestAdd,
                         )
+                        if (BubbleDropTile.canRequestAdd) {
+                            // A tile that opens the trackpad without a stop at this screen.
+                            ListRow(
+                                title = "Add Trackpad to Quick Settings",
+                                titleColor = ios.blue,
+                                onClick = { TrackpadTile.requestAdd(context) },
+                            )
+                        }
                     }
                 }
             }

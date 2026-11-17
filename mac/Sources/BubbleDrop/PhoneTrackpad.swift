@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import BubbleDropCore
+import IOBluetooth
 
 /// Lets a paired phone act as this Mac's trackpad and keyboard (PROTOCOL.md "Trackpad"). Off
 /// until the user turns it on here, and macOS only lets BubbleDrop move the pointer and type
@@ -63,6 +64,19 @@ final class PhoneTrackpad: ObservableObject {
             shared.accessGranted = true
         }
         let pointer = PointerInjector()
+        // The phone shows a Bluetooth switch: tell it the state now and whenever it changes,
+        // including when it's changed on the Mac itself.
+        let bluetooth = Task {
+            var last: Bool?
+            while !Task.isCancelled {
+                if let on = MacBluetooth.isOn, on != last {
+                    last = on
+                    stream.report(.bluetooth, on: on)
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+        defer { bluetooth.cancel() }
         while let event = try? await stream.next() {
             switch event {
             case .move(let dx, let dy): pointer.move(dx: dx, dy: dy)
@@ -72,6 +86,20 @@ final class PhoneTrackpad: ObservableObject {
             case .zoom(let phase, let magnification): pointer.zoom(phase, magnification: magnification)
             case .key(let key): pointer.key(key)
             case .text(let text): pointer.type(text)
+            case .setting(.bluetooth, let on):
+                let wasOn = MacBluetooth.isOn
+                MacBluetooth.set(on)
+                // Bluetooth takes a moment to switch. Then say how it ended up, even if it
+                // didn't change, so the phone's switch isn't left showing what was asked for.
+                Task {
+                    for _ in 0..<20 where MacBluetooth.isOn != on {
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                    }
+                    guard let now = MacBluetooth.isOn else { return }
+                    stream.report(.bluetooth, on: now)
+                    // Switched on from the phone: bring a device back too, not just the radio.
+                    if on, now, wasOn == false { BluetoothReconnect.shared.start() }
+                }
             }
         }
         // Never leave a button held down by a phone that's gone.
@@ -84,6 +112,126 @@ final class PhoneTrackpad: ObservableObject {
             }
         }
     }
+}
+
+/// The Mac's Bluetooth power. macOS has no public way to switch it; these are the calls its own
+/// Bluetooth settings use.
+enum MacBluetooth {
+    private static let framework = dlopen("/System/Library/Frameworks/IOBluetooth.framework/IOBluetooth", RTLD_LAZY)
+
+    /// Whether Bluetooth is on; nil if this macOS doesn't say.
+    static var isOn: Bool? {
+        typealias Getter = @convention(c) () -> Int32
+        guard let framework, let getter = dlsym(framework, "IOBluetoothPreferenceGetControllerPowerState") else { return nil }
+        return unsafeBitCast(getter, to: Getter.self)() != 0
+    }
+
+    static func set(_ on: Bool) {
+        typealias Setter = @convention(c) (Int32) -> Void
+        guard let framework, let setter = dlsym(framework, "IOBluetoothPreferenceSetControllerPowerState") else { return }
+        unsafeBitCast(setter, to: Setter.self)(on ? 1 : 0)
+    }
+}
+
+/// After Bluetooth is switched on from the phone, connects the nearest of the Mac's paired
+/// devices if none connects by itself. macOS can't tell how far away a device is until it's
+/// connected, so the most recently used paired devices are each connected for a moment, their
+/// signal strength is read, and only the strongest (so, roughly, the nearest) is kept. A device
+/// that's switched off or out of range doesn't answer and is skipped.
+final class BluetoothReconnect: NSObject, IOBluetoothDeviceAsyncCallbacks {
+    static let shared = BluetoothReconnect()
+
+    /// How long devices that reconnect by themselves (keyboards, mice, AirPods) get to do so.
+    private static let headStart: TimeInterval = 3
+    /// How many paired devices are tried, from the most recently used.
+    private static let most = 4
+    /// How long one device gets to answer, in Bluetooth slots of 0.625 ms (about 3 seconds).
+    private static let pageTimeout: BluetoothHCIPageTimeout = 0x1400
+    /// A connection needs a moment before it reports a signal strength; it's read this many
+    /// times, this far apart, and the best reading counts.
+    private static let readings = 4
+    private static let readingGap: TimeInterval = 0.4
+
+    // All of this is only touched on the main thread, where IOBluetooth also calls back.
+    /// The devices still to try.
+    private var waiting: [IOBluetoothDevice] = []
+    /// The device being tried now.
+    private var trying: IOBluetoothDevice?
+    /// The devices that answered, with the strongest signal read from each (dBm; nil if none was).
+    private var answered: [(device: IOBluetoothDevice, signal: Int?)] = []
+    private var run = 0
+
+    func start() {
+        DispatchQueue.main.async {
+            self.cancel()
+            let run = self.run
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.headStart) {
+                guard run == self.run, MacBluetooth.isOn == true,
+                      let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice],
+                      !paired.contains(where: { $0.isConnected() }) else { return }
+                self.waiting = Array(paired.sorted {
+                    ($0.recentAccessDate() ?? .distantPast) > ($1.recentAccessDate() ?? .distantPast)
+                }.prefix(Self.most))
+                self.next()
+            }
+        }
+    }
+
+    /// Drops a search that's under way, closing the connections it opened to compare devices.
+    private func cancel() {
+        run += 1
+        waiting = []
+        trying = nil
+        answered.forEach { _ = $0.device.closeConnection() }
+        answered = []
+    }
+
+    private func next() {
+        guard MacBluetooth.isOn == true else { return cancel() }
+        while !waiting.isEmpty {
+            let device = waiting.removeFirst()
+            trying = device
+            // Started: connectionComplete says how it went.
+            if device.openConnection(self, withPageTimeout: Self.pageTimeout,
+                                     authenticationRequired: false) == kIOReturnSuccess { return }
+        }
+        trying = nil
+        // One answer (or none) needs no comparing.
+        if answered.count > 1 { measure(run, left: Self.readings) } else { answered = [] }
+    }
+
+    func connectionComplete(_ device: IOBluetoothDevice!, status: IOReturn) {
+        DispatchQueue.main.async {
+            // Only the device being tried: one that was closed or dropped later calls back too.
+            guard let device, device === self.trying else { return }
+            if status == kIOReturnSuccess { self.answered.append((device, nil)) }
+            self.next()
+        }
+    }
+
+    /// Reads every answering device's signal strength a few times, then keeps the strongest.
+    private func measure(_ run: Int, left: Int) {
+        guard run == self.run else { return }
+        guard MacBluetooth.isOn == true else { return cancel() }
+        for i in answered.indices where answered[i].device.isConnected() {
+            // 127 means the connection has no reading yet.
+            let now = Int(answered[i].device.rawRSSI())
+            if now != 127 { answered[i].signal = max(answered[i].signal ?? now, now) }
+        }
+        if left > 1 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.readingGap) { self.measure(run, left: left - 1) }
+            return
+        }
+        // A device with no reading counts as the farthest; ties keep the more recently used.
+        let still = answered.filter { $0.device.isConnected() }
+        let nearest = still.max { ($0.signal ?? Int.min) < ($1.signal ?? Int.min) }?.device
+        for (device, _) in still where device !== nearest { _ = device.closeConnection() }
+        answered = []
+    }
+
+    func remoteNameRequestComplete(_ device: IOBluetoothDevice!, status: IOReturn) {}
+
+    func sdpQueryComplete(_ device: IOBluetoothDevice!, status: IOReturn) {}
 }
 
 /// Turns trackpad events into macOS pointer events. Used by one session's task at a time.

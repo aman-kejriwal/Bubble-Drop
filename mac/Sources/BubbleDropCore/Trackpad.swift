@@ -60,6 +60,11 @@ public final class TrackpadStream: @unchecked Sendable {
         case down = 13
     }
 
+    /// Things about the Mac the phone's trackpad screen can switch on and off.
+    public enum Setting: UInt8, Sendable {
+        case bluetooth = 0
+    }
+
     public enum Event: Sendable {
         /// The finger moved by this much, in the phone's density-independent pixels (y down).
         case move(dx: Double, dy: Double)
@@ -76,6 +81,8 @@ public final class TrackpadStream: @unchecked Sendable {
         case key(Key)
         /// Text typed on the phone's keyboard. A newline is the Return key.
         case text(String)
+        /// The phone asked for a setting to be switched on or off.
+        case setting(Setting, on: Bool)
     }
 
     /// The phone sends something at least every 2 s; this much silence means it's gone.
@@ -123,6 +130,9 @@ public final class TrackpadStream: @unchecked Sendable {
                 if let first = payload.first, let key = Key(rawValue: first) { return .key(key) }
             case 7:
                 if let text = String(data: payload, encoding: .utf8), !text.isEmpty { return .text(text) }
+            case 8:
+                guard payload.count >= 2, let setting = Setting(rawValue: payload[payload.startIndex]) else { continue }
+                return .setting(setting, on: payload[payload.startIndex + 1] == 1)
             default:
                 // 0 is the keepalive; anything newer than this Mac knows is skipped.
                 continue
@@ -148,6 +158,11 @@ public final class TrackpadStream: @unchecked Sendable {
         guard payload.count >= 4 else { return nil }
         let float = Float(bitPattern: payload.prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
         return float.isFinite ? float : nil
+    }
+
+    /// Tells the phone whether a setting is on, so its switch shows the truth.
+    public func report(_ setting: Setting, on: Bool) {
+        wire.sendNoWait(Data([8, 0, 2, setting.rawValue, on ? 1 : 0]))
     }
 
     /// Ends the session from this side.

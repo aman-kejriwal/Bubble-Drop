@@ -115,6 +115,18 @@
                 android:value="true" />
         </service>
 
+        <!-- Opens the trackpad for the paired Mac. -->
+        <service
+            android:name=".TrackpadTile"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_trackpad"
+            android:label="@string/trackpad_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".PromptActionReceiver"
             android:exported="false" />
