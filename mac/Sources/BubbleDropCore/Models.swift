@@ -117,6 +117,57 @@ public struct TextRequest: Codable, Sendable {
 /// The longest text that can be sent to a clipboard, in UTF-8 bytes.
 public let maxClipboardTextBytes = 256 * 1024
 
+/// What a phone is playing in Spotify, handed to the Mac to carry on: `POST /api/v2/spotify/play`.
+public struct SpotifyPlayRequest: Codable, Sendable {
+    public var sender: DeviceInfo
+    /// `spotify:track:…` or `spotify:episode:…`; nil when the phone's Spotify didn't say.
+    public var uri: String?
+    public var title: String
+    public var artist: String
+    public var album: String
+    /// Where the phone was in the track, in milliseconds.
+    public var positionMs: Int64
+    public var durationMs: Int64
+    /// The cover, base64 JPEG (optional).
+    public var art: String?
+
+    public init(sender: DeviceInfo, uri: String?, title: String, artist: String, album: String,
+                positionMs: Int64, durationMs: Int64, art: String?) {
+        self.sender = sender
+        self.uri = uri
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.positionMs = positionMs
+        self.durationMs = durationMs
+        self.art = art
+    }
+
+    /// The URI if it names one track or episode, and nothing else (it's passed on to Spotify).
+    public var validURI: String? {
+        guard let uri else { return nil }
+        let parts = uri.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "spotify", parts[1] == "track" || parts[1] == "episode",
+              (10...40).contains(parts[2].count),
+              parts[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return nil }
+        return uri
+    }
+}
+
+public struct SpotifyPlayResponse: Codable, Sendable {
+    /// Whether the track is now playing on the Mac.
+    public var playing: Bool
+    /// `spotify` (the Mac's Spotify app), `web` (the web player was opened) or `search`.
+    public var app: String
+    public var message: String?
+
+    public init(playing: Bool, app: String, message: String? = nil) {
+        self.playing = playing
+        self.app = app
+        self.message = message
+    }
+}
+
 /// Only http(s) links are sent or opened; other schemes could launch arbitrary apps or files.
 public func isWebLink(_ url: URL) -> Bool {
     ["http", "https"].contains(url.scheme?.lowercased() ?? "") && !(url.host ?? "").isEmpty

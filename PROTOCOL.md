@@ -179,6 +179,28 @@ from whom. The text must not be empty and is at most 256 KiB of UTF-8. Response 
 Text is only ever sent when the user asks: neither app watches its clipboard or sends it on its
 own (Android also only lets an app read the clipboard while it's on screen).
 
+### `POST /api/v2/spotify/play` (phone → Mac, paired clients only)
+Carries on on the Mac what Spotify is playing on the phone, from the same second.
+
+```jsonc
+{ "sender": DeviceInfo, "uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC",   // optional
+  "title": "…", "artist": "…", "album": "…",
+  "positionMs": 83000, "durationMs": 200000,
+  "art": "/9j/4AAQ…" }                                                     // cover, base64 JPEG (optional)
+```
+
+The phone reads Spotify's media session (through its Notification access), **pauses it first** and
+then asks, so `positionMs` is exact and the two never play at once; if the request fails it resumes.
+The Mac starts the track in Spotify for Mac muted, jumps to `positionMs`, then restores the volume, so
+the start of the track isn't heard. It answers once the track is playing (or it gave up), so the phone
+uses a read timeout of at least 45 s (Spotify may have to start first):
+`200 { "playing": bool, "app": "spotify" | "web" | "search" | "none", "message": "…" }`.
+Without Spotify for Mac it opens the track in the web player (`app: "web"`, `playing: false`); without
+a `uri` (or one that isn't `spotify:track:` / `spotify:episode:` followed by an alphanumeric ID) it
+searches Spotify for the title and artist. Controlling Spotify needs macOS Automation permission;
+until it's given, the Mac shows the track in Spotify and explains in `message`. `503` while receiving
+is off.
+
 ### `POST /api/v2/mirror` (paired clients only)
 Body: `{ "sender": DeviceInfo }`. Starts showing the sender's screen on the receiver. The receiver
 answers `200 {}` **without** `Connection: close` and keeps the connection open; the sender then
@@ -243,7 +265,7 @@ Each packet is a 3-byte big-endian header followed by the payload:
 | `3`  | `dx`, `dy`: two big-endian float32        | two fingers moved; scroll                       |
 | `4`  | direction: `0` left, `1` right, `2` up, `3` down | three fingers swiped that way; sent once per swipe |
 | `5`  | phase (`0` begin, `1` change, `2` end), magnification: big-endian float32 | two fingers pinched; zoom |
-| `6`  | key: `0` volume up, `1` volume down, `2` mute, `3` brightness up, `4` brightness down, `5` play/pause, `6` Return, `7` Delete (backspace), `8` Escape, `9` Tab, `10` left, `11` right, `12` up, `13` down | a button under the trackpad, or a key of the phone's keyboard, was pressed |
+| `6`  | key: `0` volume up, `1` volume down, `2` mute, `3` brightness up, `4` brightness down, `5` play/pause, `6` Return, `7` Delete (backspace), `8` Escape, `9` Tab, `10` left, `11` right, `12` up, `13` down, `14` lock the Mac, `15` copy (⌘C), `16` paste (⌘V), `17` cut (⌘X), `18` select all (⌘A), `19` undo (⌘Z) | a button under the trackpad, or a key of the phone's keyboard, was pressed |
 | `7`  | UTF-8 text                                | typed on the phone's keyboard; the Mac types it |
 | `8`  | setting (`0` Bluetooth), on (`1`/`0`)     | phone → Mac: switch that setting of the Mac; Mac → phone: that setting is now on or off |
 
@@ -257,7 +279,7 @@ Mission Control keyboard shortcuts (Control + arrow keys), so they must be left 
 Settings → Keyboard → Keyboard Shortcuts. A pinch is sent as a begin, any number of changes and an
 end; each change's magnification is the zoom since the one before, where 1 doubles the size and
 negative values zoom out, and the Mac passes it on as its own trackpad's magnify gesture. Keys act
-like the Mac keyboard's top row; brightness moves the built-in display one of its 16 steps. If a
+like the Mac keyboard's top row; brightness moves the built-in display one of its 16 steps; lock locks the Mac at once; copy, paste, cut, select all and undo press ⌘C, ⌘V, ⌘X, ⌘A and ⌘Z in the front app. If a
 session ends in the middle of a pinch the Mac ends the gesture. Text is typed one character at
 a time into whatever has the Mac's keyboard, whatever its keyboard layout; a newline in it is
 the Return key, a tab the Tab key, and other control characters are dropped. A phone whose

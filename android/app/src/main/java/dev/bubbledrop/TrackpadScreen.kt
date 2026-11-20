@@ -9,6 +9,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.BluetoothDisabled
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ContentCut
+import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -123,6 +129,17 @@ fun TrackpadOverlay() {
                 Text("Trackpad", style = IosType.headline, color = ios.label)
                 Text(name, style = IosType.footnote, color = ios.secondaryLabel, maxLines = 1)
             }
+            if (active != null) {
+                // Locks the Mac, like Control-Command-Q.
+                Icon(
+                    Icons.Rounded.Lock, "Lock the Mac", tint = ios.label,
+                    modifier = Modifier.clip(CircleShape).clickable {
+                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        Trackpad.key(Trackpad.KEY_LOCK)
+                    }.padding(8.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+            }
             val macBluetooth by Trackpad.macBluetooth.collectAsState()
             macBluetooth?.takeIf { active != null }?.let { on ->
                 // The Mac's Bluetooth: blue while it's on, grey with a slash while it's off.
@@ -168,7 +185,7 @@ fun TrackpadOverlay() {
                 is Trackpad.State.Active -> if (!typing) Text(
                     "Slide to move the pointer · Tap to click\n" +
                         "Two fingers to scroll · Two-finger tap to right-click\n" +
-                        "Tap, then touch and slide to drag · Lift and touch again to keep dragging\n" +
+                        "Tap, then touch and slide to drag · Lift mid-slide and touch again to keep dragging\n" +
                         "Pinch to zoom\n" +
                         "Three fingers left or right to switch apps · Up for Mission Control",
                     style = IosType.footnote, color = ios.tertiaryLabel, textAlign = TextAlign.Center,
@@ -187,6 +204,17 @@ fun TrackpadOverlay() {
             }
         }
         if (state is Trackpad.State.Active) {
+            // Editing shortcuts, pressed on the Mac with Command held (⌘X, ⌘C, ⌘V, ⌘A, ⌘Z).
+            Row(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                MacKey(Icons.Rounded.ContentCut, "Cut", Trackpad.KEY_CUT, repeats = false)
+                MacKey(Icons.Rounded.ContentCopy, "Copy", Trackpad.KEY_COPY, repeats = false)
+                MacKey(Icons.Rounded.ContentPaste, "Paste", Trackpad.KEY_PASTE, repeats = false)
+                MacKey(Icons.Rounded.SelectAll, "Select all", Trackpad.KEY_SELECT_ALL, repeats = false)
+                MacKey(Icons.AutoMirrored.Rounded.Undo, "Undo", Trackpad.KEY_UNDO, repeats = true)
+            }
             Row(
                 Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -310,6 +338,8 @@ private const val ZOOM_DP = 150f
 private const val SWIPE_DP = 40f
 /** After a drag's finger lifts, a touch this soon carries the drag on, with the button still held. */
 private const val DRAG_LOCK_MS = 300L
+/** A drag's finger lifting slower than this, in dp a second, meant to drop: the button lets go at once. */
+private const val DRAG_CARRY_MIN = 200f
 /** Fingers that sat still this long before lifting meant to stop the scroll, not flick it. */
 private const val MOMENTUM_STILL_MS = 40L
 /** A scroll keeps going after the fingers lift if they were moving at least this fast, in dp a second. */
@@ -326,8 +356,9 @@ private const val MOMENTUM_SECONDS = 0.35f
  * right after a tap holds the button down once it moves, so tap-then-slide drags. Three fingers
  * swiping left, right, up or down are sent as one swipe, like on the Mac's own trackpad. Two
  * fingers moving apart or together zoom. A scroll whose fingers lift while moving carries on and
- * slows down, until the next touch. A drag's button stays held for a moment after the finger
- * lifts, so touching again carries the drag on from a new spot on the pad.
+ * slows down, until the next touch. A drag whose finger lifts while still moving keeps its button
+ * held for a moment, so touching again carries the drag on from a new spot on the pad; a finger
+ * that came to rest before lifting drops straight away.
  *
  * [haptic] plays one of [HapticFeedbackConstants] for clicks, drags and swipes.
  */
@@ -367,6 +398,10 @@ private suspend fun PointerInputScope.trackpadGestures(haptic: (Int) -> Unit) = 
         var lastScrollAt = 0L
         var scrollLiftedAt = 0L
         var finished = false
+        // How far the drag has gone, in dp, for telling a lift in mid-movement from a drop.
+        val dragSpeed = VelocityTracker()
+        var dragged = Offset.Zero
+        var lastDragAt = 0L
         try {
             while (true) {
                 val event = awaitPointerEvent()
@@ -437,7 +472,15 @@ private suspend fun PointerInputScope.trackpadGestures(haptic: (Int) -> Unit) = 
                             })
                         }
                     }
-                    dragging || fingers == 1 -> Trackpad.move(delta.x / density, delta.y / density)
+                    dragging || fingers == 1 -> {
+                        val step = delta / density
+                        Trackpad.move(step.x, step.y)
+                        if (dragging) {
+                            dragged += step
+                            dragSpeed.addPosition(endedAt, dragged)
+                            lastDragAt = endedAt
+                        }
+                    }
                     // After a scroll, the last finger to lift shouldn't nudge the pointer.
                     pressed.size >= 2 -> {
                         val step = delta / density
@@ -450,7 +493,12 @@ private suspend fun PointerInputScope.trackpadGestures(haptic: (Int) -> Unit) = 
                 }
             }
         } finally {
-            if (dragging && finished && moved) {
+            // A finger that stopped before lifting was placing the thing, so it drops with no wait.
+            // One still moving has likely run out of pad and is about to land again.
+            val carrying = dragging && finished && moved && lastDragAt != 0L &&
+                endedAt - lastDragAt <= MOMENTUM_STILL_MS &&
+                dragSpeed.calculateVelocity().let { kotlin.math.hypot(it.x, it.y) } >= DRAG_CARRY_MIN
+            if (carrying) {
                 // The button stays down for a moment: a touch that lands in time carries the drag on.
                 val token = Any()
                 heldDrag = token
@@ -466,8 +514,8 @@ private suspend fun PointerInputScope.trackpadGestures(haptic: (Int) -> Unit) = 
                     }
                 }
             } else if (dragging) {
-                // A tap ends a held drag. Also when the gesture is cancelled, so the Mac's button
-                // is never left held.
+                // A drop, or a tap ending a held drag. Also when the gesture is cancelled, so the
+                // Mac's button is never left held.
                 Trackpad.button(Trackpad.BUTTON_LEFT, down = false)
             }
             if (pinching) Trackpad.zoom(Trackpad.ZOOM_END)

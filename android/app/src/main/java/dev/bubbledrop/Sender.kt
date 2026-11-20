@@ -84,6 +84,23 @@ class Sender(
         }
     }
 
+    /**
+     * Asks the paired Mac to carry on playing a Spotify track (PROTOCOL.md `/spotify/play`).
+     * Returns the Mac's answer; throws if it couldn't take it. Blocking; the Mac may have to start
+     * Spotify first.
+     */
+    fun playOnMac(peer: Peer, body: JSONObject): JSONObject {
+        val pinned = connectPaired(peer)
+        val response = postJson(peer, pinned, "/api/v2/spotify/play", body, readTimeoutMs = 45_000)
+        when (response.status) {
+            200 -> return response.json
+            401 -> throw IOException("${peer.name} no longer trusts this device. Unpair it and pair again.")
+            404 -> throw IOException("BubbleDrop on ${peer.name} is too old to play music from here. Update it.")
+            503 -> throw IOException("${peer.name} has receiving turned off.")
+            else -> throw IOException(response.json.optString("error", "Request failed (${response.status})"))
+        }
+    }
+
     /** Sends every file in the folder [tree] (from "Open folder"), keeping its structure. Blocking. */
     fun sendFolder(peer: Peer, tree: Uri) = send(peer) { describeTree(tree) }
 

@@ -125,6 +125,9 @@ final class AppModel: ObservableObject {
             server.textHandler = { sender, text in
                 await AppModel.shared.copy(text, from: sender)
             }
+            server.spotifyHandler = { sender, request in
+                await SpotifyHandoff.play(request, from: sender)
+            }
             server.mirrorHandler = { sender, stream in
                 await MirrorViewer.run(sender: sender, stream: stream)
             }

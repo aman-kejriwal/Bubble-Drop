@@ -127,6 +127,18 @@
             </intent-filter>
         </service>
 
+        <!-- Moves the song Spotify is playing to the paired Mac. -->
+        <service
+            android:name=".SpotifyTile"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_music"
+            android:label="@string/spotify_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".PromptActionReceiver"
             android:exported="false" />

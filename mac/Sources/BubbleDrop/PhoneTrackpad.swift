@@ -377,6 +377,47 @@ private final class PointerInjector {
         case .right: pressKey(124, arrow: true)
         case .down: pressKey(125, arrow: true)
         case .up: pressKey(126, arrow: true)
+        case .lock: lockScreen()
+        case .copy: pressCommand(8)   // ⌘C
+        case .paste: pressCommand(9)  // ⌘V
+        case .cut: pressCommand(7)    // ⌘X
+        case .selectAll: pressCommand(0)  // ⌘A
+        case .undo: pressCommand(6)   // ⌘Z
+        }
+    }
+
+    /// Locks the Mac, like Control-Command-Q. Goes straight to the login window's own lock, and
+    /// falls back to pressing the shortcut if that isn't there.
+    private func lockScreen() {
+        typealias Lock = @convention(c) () -> Void
+        if let login = dlopen("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login", RTLD_LAZY),
+           let lock = dlsym(login, "SACLockScreenImmediate") {
+            unsafeBitCast(lock, to: Lock.self)()
+            return
+        }
+        for down in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 12, keyDown: down) else { continue }  // Q
+            event.flags = [.maskControl, .maskCommand]
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Presses `code` with Command held, like ⌘C. Command goes down and comes back up around the
+    /// key, like on a real keyboard; without the release macOS keeps treating Command as held.
+    private func pressCommand(_ code: CGKeyCode) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let command: CGKeyCode = 55
+        let steps: [(CGKeyCode, Bool, CGEventFlags)] = [
+            (command, true, .maskCommand),
+            (code, true, .maskCommand),
+            (code, false, .maskCommand),
+            (command, false, []),
+        ]
+        for (key, down, flags) in steps {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { continue }
+            if key == command { event.type = .flagsChanged }
+            event.flags = flags
+            event.post(tap: .cghidEventTap)
         }
     }
 

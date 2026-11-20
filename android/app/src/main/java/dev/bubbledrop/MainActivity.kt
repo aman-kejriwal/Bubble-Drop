@@ -239,6 +239,7 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, sharedText: S
     val mirrorError by MirrorService.error.collectAsState()
     val controlEnabled by ControlService.enabled.collectAsState()
     val relayEnabled by NotificationRelay.enabled.collectAsState()
+    val nowPlaying by SpotifyHandoff.nowPlaying.collectAsState()
     val mirrorReadyFor by MirrorService.ready.collectAsState()
     val mirrorWithoutAsking by MirrorService.stayReady.collectAsState()
     val mirrorConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -370,6 +371,11 @@ private fun MainScreen(sharedUris: List<Uri>, sharedLink: String?, sharedText: S
                 item(key = "share") { ShareBanner(sharedUris.size, sharedLink, sharedText, onClearShared) }
             } else {
                 item(key = "hero") { HeroSection(running) }
+            }
+
+            // Spotify → Mac, once paired: the track playing now, or how to let the app see it.
+            if (trusted.isNotEmpty() && (!relayEnabled || nowPlaying != null)) {
+                item(key = "spotify") { NowPlayingSection() }
             }
 
             mirroringTo?.let { name ->

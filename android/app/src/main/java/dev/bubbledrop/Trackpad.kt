@@ -61,6 +61,12 @@ object Trackpad {
     const val KEY_RIGHT = 11
     const val KEY_UP = 12
     const val KEY_DOWN = 13
+    const val KEY_LOCK = 14
+    const val KEY_COPY = 15
+    const val KEY_PASTE = 16
+    const val KEY_CUT = 17
+    const val KEY_SELECT_ALL = 18
+    const val KEY_UNDO = 19
 
     private const val TAG = "Trackpad"
     private const val TYPE_KEEPALIVE = 0

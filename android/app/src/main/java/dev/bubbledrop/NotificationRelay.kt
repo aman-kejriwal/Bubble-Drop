@@ -32,9 +32,11 @@ class NotificationRelay : NotificationListenerService() {
     override fun onListenerConnected() {
         instance = this
         _enabled.value = true
+        SpotifyHandoff.attach(this)
     }
 
     override fun onListenerDisconnected() {
+        SpotifyHandoff.detach()
         instance = null
         _enabled.value = false
     }

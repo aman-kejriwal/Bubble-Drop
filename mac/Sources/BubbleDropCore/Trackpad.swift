@@ -58,6 +58,12 @@ public final class TrackpadStream: @unchecked Sendable {
         case right = 11
         case up = 12
         case down = 13
+        case lock = 14
+        case copy = 15
+        case paste = 16
+        case cut = 17
+        case selectAll = 18
+        case undo = 19
     }
 
     /// Things about the Mac the phone's trackpad screen can switch on and off.

@@ -37,6 +37,10 @@ public final class BubbleDropServer {
     public var linkHandler: (DeviceInfo, URL) async -> Bool = { _, _ in false }
     /// Puts text from a paired device on the clipboard; returns whether it was copied.
     public var textHandler: (DeviceInfo, String) async -> Bool = { _, _ in false }
+    /// Carries on playing what a paired phone was playing in Spotify; returns once it's playing (or not).
+    public var spotifyHandler: (DeviceInfo, SpotifyPlayRequest) async -> SpotifyPlayResponse = { _, _ in
+        SpotifyPlayResponse(playing: false, app: "none", message: "This Mac can't play Spotify from the phone.")
+    }
     /// Shows a paired device's screen; returns when the viewer is closed or the stream ends.
     public var mirrorHandler: (DeviceInfo, MirrorStream) async -> Void = { _, _ in }
     /// Moves this Mac's pointer for a paired phone; returns when the phone stops or the stream is closed.
@@ -173,6 +177,18 @@ public final class BubbleDropServer {
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))
                 try await handleText(try JSONDecoder().decode(TextRequest.self, from: body), client, wire)
+            case "/api/v2/spotify/play":
+                guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
+                let body = try await wire.readBody(length: Int(head.contentLength))
+                let request = try JSONDecoder().decode(SpotifyPlayRequest.self, from: body)
+                guard receivingEnabled else {
+                    return try await wire.sendResponse(status: 503, json: ErrorBody(error: "receiving is off"))
+                }
+                var sender = request.sender
+                if let known = trust.device(for: client) { sender.name = known.name }
+                // Spotify may have to start first.
+                wire.arm(60)
+                try await wire.sendResponse(status: 200, json: await spotifyHandler(sender, request))
             case "/api/v2/notify":
                 guard trust.isTrusted(client) else { return try await sendPairingRequired(wire) }
                 let body = try await wire.readBody(length: Int(head.contentLength))
